@@ -158,6 +158,22 @@ fn input<'a>(text: &'a mut String, hint: &str, w: f32) -> egui::TextEdit<'a> {
         .margin(egui::vec2(8.0, 5.0))
 }
 
+/// What to search for: a field value that looks like the entity's type, else the name.
+/// For an email card the name usually is the address; an empty "Адрес" field must not win.
+fn probe_value(e: &inv::Doc) -> String {
+    let looks = |v: &str| match e.kind {
+        Kind::Email => v.contains('@'),
+        Kind::Phone => v.chars().filter(|c| c.is_ascii_digit()).count() >= 7,
+        Kind::Domain => v.contains('.') && !v.contains(' '),
+        Kind::Place => true,
+        _ => false,
+    };
+    if looks(&e.name) && e.kind != Kind::Place {
+        return e.name.clone();
+    }
+    e.fields.iter().map(|(_, v)| v.trim()).find(|v| !v.is_empty() && looks(v)).map(str::to_string).unwrap_or_else(|| e.name.clone())
+}
+
 fn open_target(case: &Case, url: &str) -> Result<(), String> {
     let target = if url.contains("://") || url.starts_with("mailto:") {
         url.to_string()
@@ -892,7 +908,7 @@ impl Inv {
         ui.add_space(12.0);
 
         // ---- Search links: open in the browser, nothing is sent by the app itself.
-        let probe = e.fields.iter().find(|(_, v)| !v.trim().is_empty() && matches!(e.kind, Kind::Email | Kind::Phone | Kind::Domain | Kind::Place)).map(|(_, v)| v.clone()).unwrap_or_else(|| e.name.clone());
+        let probe = probe_value(e);
         let links = crate::extract::search_links(e.kind, &probe);
         if !links.is_empty() {
             ui.horizontal_wrapped(|ui| {
@@ -2008,7 +2024,7 @@ impl Inv {
             .entities
             .iter()
             .map(|e| {
-                let v = e.fields.iter().find(|(_, v)| !v.trim().is_empty() && matches!(e.kind, Kind::Email | Kind::Phone | Kind::Domain)).map(|(_, v)| v.clone()).unwrap_or_else(|| e.name.clone());
+                let v = probe_value(e);
                 (c.dir.clone(), e.name.clone(), e.kind, v)
             })
             .filter(|(_, _, k, v)| crate::autosearch::supported(*k, v))

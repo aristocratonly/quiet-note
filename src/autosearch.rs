@@ -58,8 +58,24 @@ fn body(url: &str) -> Option<String> {
     get(url).ok()?.into_string().ok()
 }
 
+/// The kind to check as: a card of type "Other" (or any) holding an email, domain or IP is checked as that.
+pub fn effective_kind(kind: Kind, value: &str) -> Kind {
+    let v = value.trim();
+    if kind != Kind::Other {
+        return kind;
+    }
+    if v.contains('@') && v.split('@').nth(1).is_some_and(|d| d.contains('.')) {
+        Kind::Email
+    } else if !is_ip(v) && !v.contains(' ') && v.contains('.') && v.rsplit('.').next().is_some_and(|t| t.len() >= 2 && t.chars().all(char::is_alphabetic)) {
+        Kind::Domain
+    } else {
+        kind
+    }
+}
+
 /// Which checks exist for an entity; empty means the button is hidden.
 pub fn supported(kind: Kind, value: &str) -> bool {
+    let kind = effective_kind(kind, value);
     match kind {
         Kind::Nick | Kind::Email | Kind::Domain | Kind::Phone => true,
         Kind::Other => is_ip(value),
@@ -75,6 +91,7 @@ fn is_ip(v: &str) -> bool {
 /// Checks run in parallel threads; the call returns when all are done.
 pub fn run(kind: Kind, value: &str, emit: impl Fn(Finding) + Send + Sync + Clone + 'static) {
     let v = value.trim().to_string();
+    let kind = effective_kind(kind, &v);
     let mut tasks: Vec<Box<dyn FnOnce() -> Vec<Finding> + Send>> = vec![];
     match kind {
         Kind::Nick => {
@@ -86,10 +103,31 @@ pub fn run(kind: Kind, value: &str, emit: impl Fn(Finding) + Send + Sync + Clone
         }
         Kind::Email => {
             let e = v.to_lowercase();
-            let e2 = e.clone();
+            let (e2, e3) = (e.clone(), e.clone());
             tasks.push(Box::new(move || gravatar(&e)));
+            tasks.push(Box::new(move || github_by_email(&e3)));
             if let Some(dom) = e2.split('@').nth(1).map(str::to_string) {
                 tasks.push(Box::new(move || mail_domain(&dom)));
+            }
+            // The mailbox name is often the same nickname people use elsewhere.
+            let local = e2.split('@').next().unwrap_or("").split('+').next().unwrap_or("").to_string();
+            if local.chars().count() >= 3 && local.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+                let l = local.clone();
+                tasks.push(Box::new(move || {
+                    vec![Finding { check: "Имя ящика", text: format!("Никнейм из почты: {l}"), add: Some(Add::Entity { kind: Kind::Nick, name: l.clone(), relation: "имя ящика".into() }) }]
+                }));
+                for site in SITES {
+                    let n = local.clone();
+                    tasks.push(Box::new(move || {
+                        check_site(site, &n)
+                            .map(|mut f| {
+                                f.text = format!("{} — ник из почты", f.text);
+                                f
+                            })
+                            .into_iter()
+                            .collect()
+                    }));
+                }
             }
         }
         Kind::Domain => {
@@ -206,6 +244,21 @@ fn gravatar(email: &str) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// GitHub accounts that show this address publicly.
+fn github_by_email(email: &str) -> Vec<Finding> {
+    let Some(v) = json(&format!("https://api.github.com/search/users?q={}+in:email", crate::extract::enc(email))) else { return vec![] };
+    v["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(5)
+        .filter_map(|u| {
+            let url = u["html_url"].as_str()?;
+            Some(Finding { check: "GitHub", text: format!("Почта указана в профиле: {url}"), add: Some(Add::Profile { site: "GitHub".into(), url: url.into() }) })
+        })
+        .collect()
 }
 
 fn mail_domain(dom: &str) -> Vec<Finding> {
@@ -407,7 +460,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live() {
-        for (k, v) in [(Kind::Nick, "qnzz_nobody_84721x"), (Kind::Nick, "torvalds"), (Kind::Domain, "example.com"), (Kind::Other, "8.8.8.8")] {
+        for (k, v) in [(Kind::Email, "torvalds@linux-foundation.org"), (Kind::Other, "hh.ru")] {
             let out = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
             let o = out.clone();
             run(k, v, move |f| o.lock().unwrap().push(f));
