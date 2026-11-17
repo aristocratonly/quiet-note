@@ -76,16 +76,6 @@ h2{font-family:var(--serif);font-weight:300;font-size:clamp(38px,5.4vw,72px);lin
 .feats dd{color:var(--frost);max-width:30em}
 kbd,code{font-family:var(--sans);font-size:.88em;padding:1px 7px;border:1px solid #2a3338;border-radius:4px;color:var(--ice);background:#0d1013;white-space:nowrap}
 code{border-color:transparent;background:var(--ash)}
-.scan{margin-top:56px;max-width:640px;border:1px solid #1c2226;background:#07090a}
-.scan-head{display:flex;justify-content:space-between;padding:16px 22px;border-bottom:1px solid #1c2226;font-family:var(--serif);font-size:24px;color:var(--ice)}
-.scan-state{font-family:var(--sans);font-size:14px;color:var(--steel);align-self:center}
-.scan ol{list-style:none;padding:8px 0}
-.scan li{display:grid;grid-template-columns:130px 1fr;gap:16px;padding:9px 22px;font-size:15px;color:#4a555c;transition:color .5s,opacity .5s}
-.scan li .res{overflow-wrap:anywhere}
-.scan li.done{color:var(--steel)}
-.scan li.done[data-hit]{color:var(--ice)}
-.scan li.done[data-hit] .res::before{content:"+ ";color:#c65a5f}
-.scan.waiting li{opacity:.25}
 .online{margin-top:32px}
 .get{display:flex;flex-wrap:wrap;gap:20px 40px;align-items:center;margin-top:56px}
 .dl{list-style:none;margin-top:56px}
@@ -177,19 +167,6 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
   <section id="auto">
     <h2>Автопроверка</h2>
     <p class="lede">Одна кнопка в карточке. Никнейм проверяется на шестнадцати сайтах, почта — в Gravatar, домен — в DNS, WHOIS, сертификатах и веб-архиве. Находки появляются по мере ответа.</p>
-    <div class="scan" id="scan" aria-label="Пример автопроверки никнейма dark_fox">
-      <div class="scan-head"><span>@dark_fox</span><span class="scan-state" id="scan-state">проверка…</span></div>
-      <ol>
-        <li data-hit><span class="site">GitHub</span><span class="res">github.com/dark_fox</span></li>
-        <li><span class="site">GitLab</span><span class="res">нет</span></li>
-        <li data-hit><span class="site">Telegram</span><span class="res">t.me/dark_fox</span></li>
-        <li><span class="site">Keybase</span><span class="res">нет</span></li>
-        <li data-hit><span class="site">Reddit</span><span class="res">reddit.com/user/dark_fox</span></li>
-        <li><span class="site">Steam</span><span class="res">нет</span></li>
-        <li data-hit><span class="site">Хабр</span><span class="res">habr.com/ru/users/dark_fox</span></li>
-        <li><span class="site">Docker Hub</span><span class="res">нет</span></li>
-      </ol>
-    </div>
     <figure class="shot"><img src="img/graph.png" alt="Граф дела: найденные профили dark_fox на GitHub, Reddit, Telegram и Хабре связаны с никнеймом" loading="lazy" width="1600" height="1031">
       <figcaption>Добавленные находки сразу встают на граф рядом с карточкой, из которой найдены.</figcaption></figure>
   </section>
@@ -295,15 +272,6 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
 /* ---------- highlight visitor OS ---------- */
 (function(){const u=navigator.userAgent;const os=/Windows/.test(u)?'win':/Mac/.test(u)?'mac':/Linux|X11/.test(u)?'linux':null;
   const li=os&&document.querySelector('.dl li[data-os="'+os+'"]');if(li){li.classList.add('mine');li.parentNode.prepend(li)}})();
-/* ---------- autosearch demo: rows resolve one by one when the block is seen ---------- */
-(function(){const box=document.getElementById('scan');if(!box)return;const rows=[...box.querySelectorAll('li')];const st=document.getElementById('scan-state');
-  const finish=()=>{rows.forEach(r=>r.classList.add('done'));st.textContent='находок: '+rows.filter(r=>r.hasAttribute('data-hit')).length};
-  if(matchMedia('(prefers-reduced-motion: reduce)').matches||!('IntersectionObserver' in window)){finish();return}
-  box.classList.add('waiting');
-  const io=new IntersectionObserver(es=>{if(!es.some(e=>e.isIntersecting))return;io.disconnect();box.classList.remove('waiting');
-    const order=rows.map((_,i)=>i).sort(()=>Math.random()-.5);
-    order.forEach((i,k)=>setTimeout(()=>{rows[i].classList.add('done');if(k===order.length-1)finish()},350+k*260));},{threshold:.5});
-  io.observe(box);})();
 </script>
 </body>
 </html>
