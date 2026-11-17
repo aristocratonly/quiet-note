@@ -66,6 +66,27 @@ h2{font-family:var(--serif);font-weight:300;font-size:clamp(38px,5.4vw,72px);lin
 .quiet{font-family:var(--serif);font-weight:300;font-size:clamp(30px,3.8vw,50px);line-height:1.15;color:var(--ice);max-width:18em}
 .quiet span{display:block;color:var(--steel)}
 
+.em{font-weight:500;color:var(--ice)}
+.shot{margin-top:64px}
+.shot img{display:block;width:100%;height:auto;border:1px solid #1c2226;border-radius:6px;background:#0d1013}
+.shot figcaption{margin-top:14px;font-size:14px;color:var(--steel)}
+.feats{display:grid;grid-template-columns:1fr 1fr;gap:36px clamp(40px,7vw,110px);margin-top:64px}
+.feats div{padding-left:20px;border-left:1px solid var(--ash)}
+.feats dt{font-weight:500;font-size:17px;color:var(--ice);margin-bottom:6px}
+.feats dd{color:var(--frost);max-width:30em}
+kbd,code{font-family:var(--sans);font-size:.88em;padding:1px 7px;border:1px solid #2a3338;border-radius:4px;color:var(--ice);background:#0d1013;white-space:nowrap}
+code{border-color:transparent;background:var(--ash)}
+.scan{margin-top:56px;max-width:640px;border:1px solid #1c2226;background:#07090a}
+.scan-head{display:flex;justify-content:space-between;padding:16px 22px;border-bottom:1px solid #1c2226;font-family:var(--serif);font-size:24px;color:var(--ice)}
+.scan-state{font-family:var(--sans);font-size:14px;color:var(--steel);align-self:center}
+.scan ol{list-style:none;padding:8px 0}
+.scan li{display:grid;grid-template-columns:130px 1fr;gap:16px;padding:9px 22px;font-size:15px;color:#4a555c;transition:color .5s,opacity .5s}
+.scan li .res{overflow-wrap:anywhere}
+.scan li.done{color:var(--steel)}
+.scan li.done[data-hit]{color:var(--ice)}
+.scan li.done[data-hit] .res::before{content:"+ ";color:#c65a5f}
+.scan.waiting li{opacity:.25}
+.online{margin-top:32px}
 .get{display:flex;flex-wrap:wrap;gap:20px 40px;align-items:center;margin-top:56px}
 .dl{list-style:none;margin-top:56px}
 .dl li{display:grid;grid-template-columns:180px minmax(0,1fr) auto;gap:16px 40px;align-items:center;padding:28px 0;border-top:1px solid var(--ash)}
@@ -80,7 +101,7 @@ h2{font-family:var(--serif);font-weight:300;font-size:clamp(38px,5.4vw,72px);lin
 footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 
 @media (max-width:760px){
-  .split,.dossier{grid-template-columns:1fr}
+  .split,.dossier,.feats{grid-template-columns:1fr}
   .hint{display:none}
   .hero{cursor:auto}
 }
@@ -102,20 +123,25 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
   <div class="hint">Посветите курсором</div>
   <div class="hero-text">
     <h1>Всё связано.<br>Даже то, что скрыто.</h1>
-    <p>Заметки и расследования, которые живут только на вашем компьютере. Обычные файлы, никакого облака, никаких свидетелей.</p>
+    <p>Заметки и расследования, которые живут только на вашем компьютере. Обычные файлы, шифрование по паролю, никакого облака и никаких свидетелей.</p>
   </div>
 </header>
 
 <main>
   <section id="notes">
     <h2>Тихое место для мыслей</h2>
-    <p class="lede">Каждая заметка — это обычный файл <b style="font-weight:500;color:var(--ice)">.md</b> в папке Quiet Notes. Его можно открыть чем угодно, скопировать на флешку, удалить без следа.</p>
-    <div class="split">
-      <div><h3>Дерево папок</h3><p>Слева папки, справа текст. Перетаскивайте заметки мышью: на папку — внутрь, вниз — в корень.</p></div>
-      <div><h3>Колонка текста</h3><p>Текст стоит узкой колонкой по центру. Шрифт с засечками, без них или моноширинный — как удобнее думать.</p></div>
-      <div><h3>Сохраняется само</h3><p>Ничего не нужно нажимать. Внизу — счётчик слов и тихая отметка, что всё записано.</p></div>
-      <div><h3>Поиск по всему</h3><p>Строка вверху панели ищет по названиям и тексту всех заметок сразу.</p></div>
-    </div>
+    <p class="lede">Каждая заметка — обычный файл <b class="em">.md</b> на вашем диске. Его можно открыть чем угодно, скопировать на флешку, удалить без следа.</p>
+    <figure class="shot"><img src="img/notes.png" alt="Окно Quiet Note: дерево папок слева, заметка с заголовком, списком и ссылкой справа" loading="lazy" width="1600" height="1031"></figure>
+    <dl class="feats">
+      <div><dt>Ссылки между мыслями</dt><dd><code>[[имя]]</code> связывает заметки. <kbd>⌘</kbd> + клик открывает, внизу видно, кто ссылается сюда.</dd></div>
+      <div><dt>Найти за секунду</dt><dd><kbd>⌘P</kbd> — пара букв названия, и заметка открыта. Поиск идёт и по тексту.</dd></div>
+      <div><dt>Режим фокуса</dt><dd><kbd>⇧⌘F</kbd> — панели исчезают, всё, кроме текущего абзаца, уходит в тень.</dd></div>
+      <div><dt>Режим чтения</dt><dd><kbd>⌘E</kbd> — разметка прячется, картинки показываются, текст читается как страница.</dd></div>
+      <div><dt>Теги</dt><dd><code>#тег</code> в тексте собирается в боковой панели. Один клик — и остаются только нужные заметки.</dd></div>
+      <div><dt>История версий</dt><dd>Копии сохраняются сами. Любую можно посмотреть и вернуть.</dd></div>
+      <div><dt>Картинки</dt><dd>Перетащите картинку в окно — она ляжет рядом с заметкой.</dd></div>
+      <div><dt>PDF и HTML</dt><dd>Экспорт тем же шрифтом, каким вы писали.</dd></div>
+    </dl>
   </section>
 
   <section id="cases">
@@ -140,16 +166,50 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
         <p>Каждой связи — источник. Каждому источнику — дата и оценка надёжности. Доказательства лежат рядом, в папке дела.</p>
         <ol class="steps">
           <li>Заведите дело и добавьте первую сущность.</li>
-          <li>Прикрепите источники: ссылку, скриншот, файл.</li>
-          <li>Тяните нити на графе: Shift и перетаскивание от узла к узлу.</li>
-          <li>Смотрите хронологию — события по датам выстраиваются сами.</li>
+          <li>Нажмите «Проверить автоматически» — приложение пройдёт по открытым источникам.</li>
+          <li>Добавьте находки: найденные профили сразу встанут на граф.</li>
+          <li>Соберите отчёт в PDF, когда картина сложится.</li>
         </ol>
       </div>
     </div>
   </section>
 
+  <section id="auto">
+    <h2>Автопроверка</h2>
+    <p class="lede">Одна кнопка в карточке. Никнейм проверяется на шестнадцати сайтах, почта — в Gravatar, домен — в DNS, WHOIS, сертификатах и веб-архиве. Находки появляются по мере ответа.</p>
+    <div class="scan" id="scan" aria-label="Пример автопроверки никнейма dark_fox">
+      <div class="scan-head"><span>@dark_fox</span><span class="scan-state" id="scan-state">проверка…</span></div>
+      <ol>
+        <li data-hit><span class="site">GitHub</span><span class="res">github.com/dark_fox</span></li>
+        <li><span class="site">GitLab</span><span class="res">нет</span></li>
+        <li data-hit><span class="site">Telegram</span><span class="res">t.me/dark_fox</span></li>
+        <li><span class="site">Keybase</span><span class="res">нет</span></li>
+        <li data-hit><span class="site">Reddit</span><span class="res">reddit.com/user/dark_fox</span></li>
+        <li><span class="site">Steam</span><span class="res">нет</span></li>
+        <li data-hit><span class="site">Хабр</span><span class="res">habr.com/ru/users/dark_fox</span></li>
+        <li><span class="site">Docker Hub</span><span class="res">нет</span></li>
+      </ol>
+    </div>
+    <figure class="shot"><img src="img/graph.png" alt="Граф дела: найденные профили dark_fox на GitHub, Reddit, Telegram и Хабре связаны с никнеймом" loading="lazy" width="1600" height="1031">
+      <figcaption>Добавленные находки сразу встают на граф рядом с карточкой, из которой найдены.</figcaption></figure>
+  </section>
+
+  <section id="tools">
+    <h2>Всё остальное — под рукой</h2>
+    <dl class="feats">
+      <div><dt>Шифрование паролем</dt><dd>Карточки, заметки и улики дела шифруются. Даже имена людей на диске скрыты. Пароль не восстановить — его знаете только вы.</dd></div>
+      <div><dt>Сущности из текста</dt><dd>Вставьте переписку или страницу — почты, телефоны, домены, IP, никнеймы и кошельки найдутся сами.</dd></div>
+      <div><dt>Карта</dt><dd>Места с координатами — точки на карте. Координаты находятся по адресу прямо в карточке.</dd></div>
+      <div><dt>Копия страницы</dt><dd>Источник-ссылку можно сохранить в дело файлом с датой. Улика не пропадёт, если страницу удалят.</dd></div>
+      <div><dt>Поиск по всем делам</dt><dd>Встречался ли этот никнейм раньше — видно сразу, по всем расследованиям.</dd></div>
+      <div><dt>Отчёт</dt><dd>Сущности, связи, источники и хронология одним документом в PDF или Markdown.</dd></div>
+    </dl>
+    <figure class="shot"><img src="img/map.png" alt="Карта дела: точки «Склад» и «Офис на Баумана» на тёмной карте Казани" loading="lazy" width="1600" height="1031"></figure>
+  </section>
+
   <section id="local">
-    <p class="quiet">Мы не видим ваши заметки.<span>Потому что их у нас нет. Нет сервера, аккаунта и синхронизации. Только папка на вашем диске.</span></p>
+    <p class="quiet">Мы не видим ваши заметки.<span>Потому что их у нас нет. Нет сервера, аккаунта и синхронизации. Только папка на вашем диске — а дело можно ещё и запереть паролем.</span></p>
+    <p class="note online">В интернет приложение выходит только по вашему действию: карта, поиск адреса, копия страницы и автопроверка. Запросы идут прямо с вашего компьютера.</p>
   </section>
 
   <section id="get">
@@ -235,6 +295,15 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
 /* ---------- highlight visitor OS ---------- */
 (function(){const u=navigator.userAgent;const os=/Windows/.test(u)?'win':/Mac/.test(u)?'mac':/Linux|X11/.test(u)?'linux':null;
   const li=os&&document.querySelector('.dl li[data-os="'+os+'"]');if(li){li.classList.add('mine');li.parentNode.prepend(li)}})();
+/* ---------- autosearch demo: rows resolve one by one when the block is seen ---------- */
+(function(){const box=document.getElementById('scan');if(!box)return;const rows=[...box.querySelectorAll('li')];const st=document.getElementById('scan-state');
+  const finish=()=>{rows.forEach(r=>r.classList.add('done'));st.textContent='находок: '+rows.filter(r=>r.hasAttribute('data-hit')).length};
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches||!('IntersectionObserver' in window)){finish();return}
+  box.classList.add('waiting');
+  const io=new IntersectionObserver(es=>{if(!es.some(e=>e.isIntersecting))return;io.disconnect();box.classList.remove('waiting');
+    const order=rows.map((_,i)=>i).sort(()=>Math.random()-.5);
+    order.forEach((i,k)=>setTimeout(()=>{rows[i].classList.add('done');if(k===order.length-1)finish()},350+k*260));},{threshold:.5});
+  io.observe(box);})();
 </script>
 </body>
 </html>
