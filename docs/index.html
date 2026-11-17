@@ -67,6 +67,13 @@ h2{font-family:var(--serif);font-weight:300;font-size:clamp(38px,5.4vw,72px);lin
 .quiet span{display:block;color:var(--steel)}
 
 .get{display:flex;flex-wrap:wrap;gap:20px 40px;align-items:center;margin-top:56px}
+.dl{list-style:none;margin-top:56px}
+.dl li{display:grid;grid-template-columns:180px minmax(0,1fr) auto;gap:16px 40px;align-items:center;padding:28px 0;border-top:1px solid var(--ash)}
+.dl h3{font-family:var(--serif);font-weight:300;font-size:32px;color:var(--ice)}
+.dl .btn{border-color:#2f3a40;color:var(--frost)}
+.dl li.mine .btn{border-color:var(--frost);color:var(--ice)}
+.dl li.mine h3::after{content:"ваша система";display:block;font-family:var(--sans);font-size:13px;color:var(--steel);margin-top:4px}
+@media (max-width:760px){.dl li{grid-template-columns:1fr}}
 .btn{display:inline-block;padding:16px 30px;border:1px solid var(--frost);color:var(--ice);text-decoration:none;font-weight:400;transition:background .25s,color .25s}
 .btn:hover{background:var(--ice);color:#000}
 .note{font-size:14px;color:var(--steel);max-width:34em}
@@ -146,11 +153,12 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
   </section>
 
   <section id="get">
-    <h2>Скачать для macOS</h2>
-    <div class="get">
-      <a class="btn" href="https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-macOS.zip">Скачать Quiet Note</a>
-      <p class="note">Apple Silicon. Приложение не подписано: при первом запуске нажмите на нём правой кнопкой в «Программах» и выберите «Открыть».</p>
-    </div>
+    <h2>Скачать</h2>
+    <ul class="dl">
+      <li data-os="mac"><h3>macOS</h3><p class="note">Apple Silicon. Приложение не подписано: при первом запуске нажмите на нём правой кнопкой и выберите «Открыть».</p><a class="btn" href="https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-macOS.zip">Скачать для macOS</a></li>
+      <li data-os="win"><h3>Windows</h3><p class="note">64-бит. Распакуйте архив и запустите Quiet Note.exe. Если SmartScreen предупредит, нажмите «Подробнее», затем «Выполнить в любом случае».</p><a class="btn" href="https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-Windows-x86_64.zip">Скачать для Windows</a></li>
+      <li data-os="linux"><h3>Linux</h3><p class="note">x86_64. Распакуйте архив и запустите quiet-note. Нужны GTK 3 и OpenGL.</p><a class="btn" href="https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-Linux-x86_64.tar.gz">Скачать для Linux</a></li>
+    </ul>
   </section>
 </main>
 
@@ -224,6 +232,9 @@ footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);displ
   }
   build();m.x=m.tx=W*.62;m.y=m.ty=H*.32;requestAnimationFrame(frame);
 })();
+/* ---------- highlight visitor OS ---------- */
+(function(){const u=navigator.userAgent;const os=/Windows/.test(u)?'win':/Mac/.test(u)?'mac':/Linux|X11/.test(u)?'linux':null;
+  const li=os&&document.querySelector('.dl li[data-os="'+os+'"]');if(li){li.classList.add('mine');li.parentNode.prepend(li)}})();
 </script>
 </body>
 </html>

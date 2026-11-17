@@ -1,7 +1,7 @@
 # Quiet Note
 
 Сайт: https://aristocratonly.github.io/quiet-note/
-Скачать для macOS: [Quiet-Note-macOS.zip](https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-macOS.zip) — приложение не подписано, при первом запуске: правый клик → «Открыть».
+Скачать: [macOS](https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-macOS.zip), [Windows](https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-Windows-x86_64.zip), [Linux](https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-Linux-x86_64.tar.gz). Сборки не подписаны: на macOS при первом запуске правый клик → «Открыть», на Windows в SmartScreen «Подробнее» → «Выполнить в любом случае».
 
 Минималистичные заметки на чистом Rust (egui). Тёмная тема, слева дерево папок, справа текст.
 
