@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/aristocratonly/quiet-note/releases/latest"><img src="https://img.shields.io/github/v/release/aristocratonly/quiet-note?style=flat-square&color=0d1013&labelColor=000&label=релиз" alt="Релиз"></a>
+  <a href="https://github.com/aristocratonly/quiet-note/releases/latest"><img src="https://img.shields.io/github/v/release/aristocratonly/quiet-note?style=flat-square&color=0d1013&labelColor=000&label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7" alt="Релиз"></a>
   <img src="https://img.shields.io/badge/macOS%20·%20Windows%20·%20Linux-0d1013?style=flat-square&labelColor=000" alt="macOS, Windows, Linux">
   <img src="https://img.shields.io/badge/Rust%20+%20egui-0d1013?style=flat-square&logo=rust&logoColor=b9c7d0&labelColor=000" alt="Rust + egui">
   <a href="https://aristocratonly.github.io/quiet-note/"><img src="https://img.shields.io/badge/сайт-0d1013?style=flat-square&labelColor=000" alt="Сайт"></a>
