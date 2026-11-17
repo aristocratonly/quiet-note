@@ -32,13 +32,30 @@ pub fn tint(c: Color32, a: f32) -> Color32 {
     c.gamma_multiply(a)
 }
 
+/// Blend two colours, `t` from 0 to 1.
+pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t.clamp(0.0, 1.0)).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// Animation timing for the whole app: soft and short when smooth motion is on, instant when off.
+pub fn motion(ctx: &egui::Context, smooth: bool) {
+    ctx.style_mut(|s| {
+        s.animation_time = if smooth { 0.2 } else { 0.0 };
+        s.scroll_animation = if smooth { egui::style::ScrollAnimation::new(1400.0, egui::Rangef::new(0.12, 0.32)) } else { egui::style::ScrollAnimation::none() };
+        s.visuals.text_cursor.blink = smooth;
+        s.visuals.text_cursor.on_duration = 0.6;
+        s.visuals.text_cursor.off_duration = 0.4;
+    });
+}
+
 pub fn font(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
 pub fn family_for(style: crate::TextStyle) -> FontFamily {
     match style {
-        crate::TextStyle::Sans => FontFamily::Proportional,
+        crate::TextStyle::Sans => FontFamily::Name(WRITE_SANS.into()),
         crate::TextStyle::Serif => FontFamily::Name(SERIF.into()),
         crate::TextStyle::Mono => FontFamily::Monospace,
     }
@@ -54,33 +71,55 @@ fn load(fonts: &mut FontDefinitions, name: &str, paths: &[&str]) -> bool {
     false
 }
 
+/// Fonts shipped inside the binary, so writing looks the same on every system.
+/// Each face is split into Latin and Cyrillic files; both go into the family.
+macro_rules! embed {
+    ($fonts:expr, $name:literal, $lat:literal, $cyr:literal) => {{
+        $fonts.font_data.insert(concat!($name, "-lat").into(), Arc::new(FontData::from_static(include_bytes!(concat!("../assets/fonts/", $lat)))));
+        $fonts.font_data.insert(concat!($name, "-cyr").into(), Arc::new(FontData::from_static(include_bytes!(concat!("../assets/fonts/", $cyr)))));
+        vec![concat!($name, "-lat").to_string(), concat!($name, "-cyr").to_string()]
+    }};
+}
+
+pub const WRITE_SANS: &str = "write-sans";
+pub const WRITE_SANS_BOLD: &str = "write-sans-bold";
+pub const SERIF_BOLD: &str = "serif-bold";
+pub const SERIF_ITALIC: &str = "serif-italic";
+
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    // Icons live in the proportional family as a fallback.
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
 
-    let sans = load(&mut fonts, "sf", &["/System/Library/Fonts/SFNS.ttf", "C:\\Windows\\Fonts\\segoeui.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"]);
-    let serif = load(&mut fonts, "newyork", &["/System/Library/Fonts/NewYork.ttf", "/System/Library/Fonts/Supplemental/Georgia.ttf", "C:\\Windows\\Fonts\\georgia.ttf", "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf", "/usr/share/fonts/noto/NotoSerif-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", "/usr/share/fonts/TTF/DejaVuSerif.ttf"]);
-    let mono = load(&mut fonts, "sfmono", &["/System/Library/Fonts/SFNSMono.ttf", "C:\\Windows\\Fonts\\consola.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf"]);
+    let onest = embed!(fonts, "onest", "onest-latin-400.ttf", "onest-cyrillic-400.ttf");
+    let onest_b = embed!(fonts, "onest-b", "onest-latin-500.ttf", "onest-cyrillic-500.ttf");
+    let lit = embed!(fonts, "literata", "literata-latin-400-normal.ttf", "literata-cyrillic-400-normal.ttf");
+    let lit_b = embed!(fonts, "literata-b", "literata-latin-600-normal.ttf", "literata-cyrillic-600-normal.ttf");
+    let lit_i = embed!(fonts, "literata-i", "literata-latin-400-italic.ttf", "literata-cyrillic-400-italic.ttf");
+
+    // Interface: San Francisco on macOS, Onest elsewhere (system fonts on Linux vary too much).
+    let sf = cfg!(target_os = "macos") && load(&mut fonts, "sf", &["/System/Library/Fonts/SFNS.ttf"]);
+    let mono = load(&mut fonts, "sysmono", &["/System/Library/Fonts/SFNSMono.ttf", "C:\\Windows\\Fonts\\consola.ttf", "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf"]);
 
     let prop = fonts.families.entry(FontFamily::Proportional).or_default();
-    if sans {
-        prop.insert(0, "sf".into());
-    }
+    let mut head: Vec<String> = if sf { vec!["sf".into()] } else { onest.clone() };
+    head.extend(prop.drain(..));
+    *prop = head;
     let fallback = prop.clone();
-
-    let mut serif_fam = vec![];
-    if serif {
-        serif_fam.push("newyork".to_string());
-    }
-    serif_fam.extend(fallback.iter().cloned());
-    fonts.families.insert(FontFamily::Name(SERIF.into()), serif_fam);
+    let with_fb = |mut v: Vec<String>| {
+        v.extend(fallback.iter().cloned());
+        v
+    };
+    fonts.families.insert(FontFamily::Name(WRITE_SANS.into()), with_fb(onest));
+    fonts.families.insert(FontFamily::Name(WRITE_SANS_BOLD.into()), with_fb(onest_b));
+    fonts.families.insert(FontFamily::Name(SERIF.into()), with_fb(lit));
+    fonts.families.insert(FontFamily::Name(SERIF_BOLD.into()), with_fb(lit_b));
+    fonts.families.insert(FontFamily::Name(SERIF_ITALIC.into()), with_fb(lit_i));
 
     let monof = fonts.families.entry(FontFamily::Monospace).or_default();
     if mono {
-        monof.insert(0, "sfmono".into());
+        monof.insert(0, "sysmono".into());
     }
-    monof.extend(fallback.iter().filter(|f| f.as_str() == "phosphor").cloned());
+    monof.extend(fallback.iter().cloned());
     ctx.set_fonts(fonts);
 }
 

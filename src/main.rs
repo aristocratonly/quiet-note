@@ -4,6 +4,7 @@ mod fsops;
 mod inv_ui;
 mod investigation;
 mod theme;
+mod writer;
 
 use eframe::egui::{self, FontId, RichText, Sense, Stroke};
 use egui_phosphor::regular as ic;
@@ -52,6 +53,7 @@ struct Settings {
     mode: Mode,
     inv_root: PathBuf,
     last_case: Option<PathBuf>,
+    smooth: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +70,7 @@ impl Default for Settings {
             mode: Mode::Notes,
             inv_root: docs.join("Quiet Investigations"),
             last_case: None,
+            smooth: true,
         }
     }
 }
@@ -96,6 +99,9 @@ struct App {
     focus_editor: bool,
     filter: String,
     inv: inv_ui::Inv,
+    /// When the current note or section appeared, for the fade-in.
+    shown_at: Instant,
+    shown_key: Option<PathBuf>,
 }
 
 fn word_count(t: &str) -> usize {
@@ -139,6 +145,8 @@ impl App {
             error: None,
             focus_editor: false,
             filter: String::new(),
+            shown_at: Instant::now(),
+            shown_key: None,
         };
         if let Some(p) = app.s.last_open.clone() {
             if p.is_file() {
@@ -312,12 +320,20 @@ impl App {
 
             let row = rect.shrink2(egui::vec2(8.0, 1.0));
             let p = ui.painter();
+            let t_hover = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), 0.14);
+            let t_sel = ui.ctx().animate_bool_with_time(resp.id.with("s"), selected, 0.22);
             if hovering && is_dir {
                 p.rect(row, 6.0, theme::DROP, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
-            } else if selected {
-                p.rect_filled(row, 6.0, theme::SELECTED);
-            } else if resp.hovered() {
-                p.rect_filled(row, 6.0, theme::HOVER);
+            } else {
+                let base = theme::lerp(theme::SIDEBAR, theme::HOVER, t_hover);
+                let fill = theme::lerp(base, theme::SELECTED, t_sel);
+                if t_hover > 0.0 || t_sel > 0.0 {
+                    p.rect_filled(row, 6.0, fill);
+                }
+                if t_sel > 0.0 && !is_dir {
+                    let bar = egui::Rect::from_min_size(row.left_top() + egui::vec2(0.0, 6.0), egui::vec2(2.0, (row.height() - 12.0) * t_sel));
+                    p.rect_filled(bar, 1.0, theme::ACCENT.gamma_multiply(t_sel));
+                }
             }
             let y = rect.center().y;
             let x0 = rect.left() + indent;
@@ -519,6 +535,12 @@ impl App {
                         ui.selectable_value(&mut self.s.wide, true, "Во всю ширину");
                     });
                     ui.end_row();
+                    ui.label(RichText::new("Плавность").color(theme::MUTED));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.s.smooth, true, "Включена");
+                        ui.selectable_value(&mut self.s.smooth, false, "Выключена");
+                    });
+                    ui.end_row();
                 });
                 ui.separator();
                 for (label, notes) in [("Папка заметок", true), ("Папка расследований", false)] {
@@ -598,17 +620,31 @@ impl App {
                 });
             });
 
-        let font = FontId::new(self.s.font_size, theme::family_for(self.s.text_style));
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // Fade the page in when another note opens.
+        if self.shown_key.as_ref() != Some(&path) {
+            self.shown_key = Some(path.clone());
+            self.shown_at = Instant::now();
+        }
+        let fade = if self.s.smooth { writer::ease(self.shown_at.elapsed().as_secs_f32() / 0.32) } else { 1.0 };
+        if fade < 1.0 {
+            ui.ctx().request_repaint();
+        }
+        ui.set_opacity(fade);
+
+        let look = writer::Look { size: self.s.font_size, style: self.s.text_style };
+        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
+            ui.fonts_mut(|f| f.layout_job(writer::layout(text.as_str(), &look, wrap)))
+        };
+        egui::ScrollArea::vertical().auto_shrink(false).animated(self.s.smooth).show(ui, |ui| {
             let avail = ui.available_width();
-            let col = if self.s.wide { avail - 96.0 } else { (self.s.font_size * 42.0).min(avail - 96.0) };
-            let side = ((avail - col) / 2.0).clamp(24.0, 127.0);
+            let col = if self.s.wide { avail - 120.0 } else { (self.s.font_size * 38.0).min(avail - 96.0) };
+            let side = ((avail - col) / 2.0).clamp(28.0, 127.0);
+            let lift = (1.0 - fade) * 10.0;
             let edit = egui::TextEdit::multiline(&mut self.text)
                 .frame(false)
-                .font(font)
-                .text_color(theme::TEXT)
-                .hint_text(RichText::new("Начните писать…").color(theme::FAINT))
-                .margin(egui::Margin { left: side as i8, right: side as i8, top: 22, bottom: 60 })
+                .layouter(&mut layouter)
+                .hint_text(RichText::new("Заголовок\n\nНачните писать…  **жирный**, *курсив*, # заголовок, - список, > цитата").color(theme::FAINT))
+                .margin(egui::Margin { left: side as i8, right: side as i8, top: (40.0 + lift) as i8, bottom: 120 })
                 .lock_focus(true)
                 .desired_width(f32::INFINITY);
             let r = ui.add_sized(ui.available_size(), edit);
@@ -625,6 +661,7 @@ impl App {
 
     fn ui(&mut self, ctx: &egui::Context) {
         let mut actions = Vec::new();
+        theme::motion(ctx, self.s.smooth);
 
         let (new_note, new_folder, save) = ctx.input_mut(|i| {
             (

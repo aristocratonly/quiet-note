@@ -12,7 +12,7 @@ fn sample(root: &Path) -> Settings {
     let invs = root.join("cases");
     fs::create_dir_all(notes.join("Статьи/Черновики")).unwrap();
     fs::create_dir_all(notes.join("Личное")).unwrap();
-    let article = "Тихие инструменты\n\nХороший инструмент не спорит с вами. Он исчезает, когда вы начинаете работать, и появляется, только когда нужен.\n\nЭтот текст — пример длинной заметки: здесь видно, как выглядит колонка, межстрочный интервал и поля. Пишите статьи, держите личные записи и ведите расследования в одном месте.\n\nВсё хранится в обычных файлах, поэтому ничего не потеряется.";
+    let article = "Тихие инструменты\n\nХороший инструмент **не спорит с вами**. Он исчезает, когда вы начинаете работать, и появляется, только когда нужен.\n\n> Лучший интерфейс — тот, которого не замечаешь.\n\n## Что важно\n\n- обычные файлы, а не база данных\n- текст колонкой, *без лишнего шума*\n- связи через [[Идеи]]\n- [x] сохранять само\n- [ ] ничего не просить взамен\n\nЭтот текст — пример длинной заметки: здесь видно, как выглядит колонка, межстрочный интервал и поля. Пишите статьи, держите личные записи и ведите расследования в одном месте.\n\nВсё хранится в обычных файлах, поэтому ничего не потеряется.";
     fs::write(notes.join("Статьи/Тихие инструменты.md"), article).unwrap();
     fs::write(notes.join("Статьи/Черновики/Идеи.md"), "- первое\n- второе").unwrap();
     fs::write(notes.join("Личное/Список дел.md"), "Купить хлеб").unwrap();
@@ -68,6 +68,7 @@ fn sample(root: &Path) -> Settings {
         expanded: [notes.join("Статьи"), notes.join("Статьи/Черновики")].into_iter().collect(),
         inv_root: invs,
         last_case: Some(dir2),
+        smooth: false,
         ..Default::default()
     }
 }
@@ -91,12 +92,13 @@ fn shoot(name: &str, settings: Settings, setup: impl FnOnce(&mut App) + 'static)
                         f(&mut app);
                     }
                     st.app = Some(app);
+                    return; // fonts set in this frame apply from the next one
                 }
                 st.app.as_mut().unwrap().ui(ctx);
             },
             state,
         );
-    h.run_steps(6);
+    h.run_steps(30);
     let img = h.render().expect("render");
     fs::create_dir_all("target/shots").unwrap();
     img.save(format!("target/shots/{name}.png")).unwrap();
@@ -121,6 +123,7 @@ fn shots() {
         inv_root: parts.3.clone(),
         last_case: parts.4.clone(),
         mode,
+        smooth: false,
         ..Default::default()
     };
     shoot("1-notes", mk(Mode::Notes), |_| {});
