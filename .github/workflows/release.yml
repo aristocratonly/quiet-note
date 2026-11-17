@@ -1,0 +1,59 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Существующий тег релиза, куда выложить сборки"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: Quiet-Note-Linux-x86_64.tar.gz
+          - os: windows-latest
+            asset: Quiet-Note-Windows-x86_64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-3-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev libdbus-1-dev
+
+      - run: cargo build --release
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "Quiet Note"
+          cp target/release/quiet-note packaging/quiet-note.desktop README.md "Quiet Note/"
+          tar -czf ${{ matrix.asset }} "Quiet Note"
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory "Quiet Note" | Out-Null
+          Copy-Item target/release/quiet-note.exe "Quiet Note/Quiet Note.exe"
+          Copy-Item README.md "Quiet Note/"
+          Compress-Archive -Path "Quiet Note" -DestinationPath ${{ matrix.asset }}
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.tag || github.ref_name }}" "${{ matrix.asset }}" --clobber

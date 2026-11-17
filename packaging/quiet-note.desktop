@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Quiet Note
+Comment=Заметки и расследования
+Exec=quiet-note
+Terminal=false
+Categories=Office;Utility;

@@ -342,8 +342,8 @@ impl App {
                     actions.push(Action::StartRename(entry.clone()));
                     ui.close();
                 }
-                if ui.button(format!("{}  Показать в Finder", ic::ARROW_SQUARE_OUT)).clicked() {
-                    let _ = std::process::Command::new("open").arg("-R").arg(&entry).spawn();
+                if ui.button(format!("{}  {}", ic::ARROW_SQUARE_OUT, fsops::FILE_MANAGER)).clicked() {
+                    fsops::open_external(&entry.display().to_string(), true);
                     ui.close();
                 }
                 ui.separator();

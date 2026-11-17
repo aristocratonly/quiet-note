@@ -128,7 +128,7 @@ fn open_target(case_dir: &Path, url: &str) {
     } else {
         case_dir.join(url).display().to_string()
     };
-    let _ = std::process::Command::new("open").arg(target).spawn();
+    crate::fsops::open_external(&target, false);
 }
 
 /// Colored rounded square with the kind icon.
@@ -316,8 +316,8 @@ impl Inv {
                             self.case_rename = Some((dir.clone(), name.clone(), false));
                             ui.close();
                         }
-                        if ui.button(format!("{}  Показать в Finder", ic::ARROW_SQUARE_OUT)).clicked() {
-                            let _ = std::process::Command::new("open").arg(&dir).spawn();
+                        if ui.button(format!("{}  {}", ic::ARROW_SQUARE_OUT, crate::fsops::FILE_MANAGER)).clicked() {
+                            crate::fsops::open_external(&dir.display().to_string(), false);
                             ui.close();
                         }
                         ui.separator();

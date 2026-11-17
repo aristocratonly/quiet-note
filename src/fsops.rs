@@ -138,3 +138,22 @@ mod tests {
         assert_eq!(list(&root).first(), Some(&f)); // folders first
     }
 }
+
+/// Opens a file, folder or URL with the system handler. With `reveal`, shows the item in the file manager.
+pub fn open_external(target: &str, reveal: bool) {
+    use std::process::Command;
+    #[cfg(target_os = "macos")]
+    let r = if reveal { Command::new("open").arg("-R").arg(target).spawn() } else { Command::new("open").arg(target).spawn() };
+    #[cfg(target_os = "windows")]
+    let r = if reveal { Command::new("explorer").arg(format!("/select,{target}")).spawn() } else { Command::new("cmd").args(["/C", "start", "", target]).spawn() };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = {
+        let p = std::path::Path::new(target);
+        let t = if reveal && p.is_file() { p.parent().map(|d| d.display().to_string()).unwrap_or_default() } else { target.to_string() };
+        Command::new("xdg-open").arg(t).spawn()
+    };
+    let _ = r;
+}
+
+/// Name of the system file manager for menu labels.
+pub const FILE_MANAGER: &str = if cfg!(target_os = "macos") { "Показать в Finder" } else if cfg!(target_os = "windows") { "Показать в Проводнике" } else { "Показать в папке" };

@@ -59,9 +59,9 @@ fn setup_fonts(ctx: &egui::Context) {
     // Icons live in the proportional family as a fallback.
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
 
-    let sans = load(&mut fonts, "sf", &["/System/Library/Fonts/SFNS.ttf"]);
-    let serif = load(&mut fonts, "newyork", &["/System/Library/Fonts/NewYork.ttf", "/System/Library/Fonts/Supplemental/Georgia.ttf"]);
-    let mono = load(&mut fonts, "sfmono", &["/System/Library/Fonts/SFNSMono.ttf"]);
+    let sans = load(&mut fonts, "sf", &["/System/Library/Fonts/SFNS.ttf", "C:\\Windows\\Fonts\\segoeui.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"]);
+    let serif = load(&mut fonts, "newyork", &["/System/Library/Fonts/NewYork.ttf", "/System/Library/Fonts/Supplemental/Georgia.ttf", "C:\\Windows\\Fonts\\georgia.ttf", "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf", "/usr/share/fonts/noto/NotoSerif-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", "/usr/share/fonts/TTF/DejaVuSerif.ttf"]);
+    let mono = load(&mut fonts, "sfmono", &["/System/Library/Fonts/SFNSMono.ttf", "C:\\Windows\\Fonts\\consola.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf"]);
 
     let prop = fonts.families.entry(FontFamily::Proportional).or_default();
     if sans {
