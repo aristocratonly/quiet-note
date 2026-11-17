@@ -49,6 +49,15 @@ pub fn motion(ctx: &egui::Context, smooth: bool) {
     });
 }
 
+/// Shortcut labels for this system: ⌘ and ⇧ on macOS, Ctrl and Shift elsewhere.
+pub fn keys(s: &str) -> String {
+    if cfg!(target_os = "macos") {
+        s.to_string()
+    } else {
+        s.replace("⇧⌘", "Ctrl+Shift+").replace("⌘ +", "Ctrl +").replace('⌘', "Ctrl+").replace('⇧', "Shift+")
+    }
+}
+
 pub fn font(size: f32) -> FontId {
     FontId::proportional(size)
 }

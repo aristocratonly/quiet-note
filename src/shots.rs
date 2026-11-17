@@ -34,6 +34,10 @@ fn sample(root: &Path) -> Settings {
     let d = mk(&mut c, Kind::Domain, "secure-login.example");
     let o = mk(&mut c, Kind::Org, "ООО «Вектор»");
     let ph = mk(&mut c, Kind::Phone, "+7 900 000-00-00");
+    let pl = mk(&mut c, Kind::Place, "Офис на Баумана");
+    c.entities[pl].fields = vec![("Адрес".into(), "Казань, ул. Баумана, 1".into()), ("Координаты".into(), "55.7887, 49.1221".into())];
+    let pl2 = mk(&mut c, Kind::Place, "Склад");
+    c.entities[pl2].fields = vec![("Координаты".into(), "55.8304, 49.0661".into())];
     let link = |c: &mut Case, a: usize, b: usize, r: &str| {
         let t = c.entities[b].name.clone();
         c.entities[a].links.push(Link { target: t, relation: r.into() });
@@ -136,4 +140,10 @@ fn shots() {
     shoot("5-timeline", mk(Mode::Investigations), |a| a.inv.view = inv_ui::View::Timeline);
     shoot("6-empty-notes", Settings { mode: Mode::Notes, last_open: None, ..mk(Mode::Notes) }, |_| {});
     shoot("7-settings", mk(Mode::Notes), |a| a.show_settings = true);
+    shoot("8-reading", mk(Mode::Notes), |a| a.reading = true);
+    shoot("9-quick", mk(Mode::Notes), |a| a.quick = Some(crate::Quick { query: "и".into(), sel: 0, focus: false }));
+    shoot("10-focus", mk(Mode::Notes), |a| a.focus_mode = true);
+    shoot("11-map", mk(Mode::Investigations), |a| a.inv.view = inv_ui::View::Map);
+    shoot("13-password", mk(Mode::Investigations), |a| a.inv.open_encrypt());
+    shoot("12-extract", mk(Mode::Investigations), |a| a.inv.open_extract("Пишите на fox.mail@example.org или +7 (900) 123-45-67, сайт https://secure-login.example/x, @dark_fox, сервер 185.22.10.7"));
 }

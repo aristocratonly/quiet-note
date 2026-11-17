@@ -1,9 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod extract;
 mod fsops;
 mod inv_ui;
 mod investigation;
+mod map;
 mod theme;
+mod notes;
+mod pdf;
+mod vault;
 mod writer;
 
 use eframe::egui::{self, FontId, RichText, Sense, Stroke};
@@ -102,6 +107,40 @@ struct App {
     /// When the current note or section appeared, for the fade-in.
     shown_at: Instant,
     shown_key: Option<PathBuf>,
+    /// Text as last saved, for version history.
+    saved_text: String,
+    quick: Option<Quick>,
+    focus_mode: bool,
+    reading: bool,
+    backlinks: (Option<PathBuf>, Instant, Vec<(PathBuf, String)>),
+    tags: (Instant, Vec<(String, usize)>),
+    hits: Option<(String, HashSet<PathBuf>)>,
+    history: Option<(Vec<(PathBuf, String)>, usize)>,
+}
+
+/// The ⌘P switcher.
+struct Quick {
+    query: String,
+    sel: usize,
+    focus: bool,
+}
+
+/// Does every character of the query appear in order? Lower score is better.
+fn fuzzy(hay: &str, q: &str) -> Option<usize> {
+    let hay = hay.to_lowercase();
+    if q.is_empty() {
+        return Some(0);
+    }
+    if let Some(i) = hay.find(q) {
+        return Some(i);
+    }
+    let mut it = hay.chars().enumerate();
+    let mut last = 0;
+    for qc in q.chars() {
+        let (i, _) = it.find(|(_, c)| *c == qc)?;
+        last = i;
+    }
+    Some(100 + last)
 }
 
 fn word_count(t: &str) -> usize {
@@ -131,6 +170,7 @@ impl App {
 
     fn with_settings(ctx: &egui::Context, s: Settings) -> Self {
         theme::apply(ctx);
+        egui_extras::install_image_loaders(ctx);
         let _ = std::fs::create_dir_all(&s.root);
         let inv = inv_ui::Inv::new(s.inv_root.clone(), s.last_case.clone());
         let mut app = Self {
@@ -147,6 +187,14 @@ impl App {
             filter: String::new(),
             shown_at: Instant::now(),
             shown_key: None,
+            saved_text: String::new(),
+            quick: None,
+            focus_mode: false,
+            reading: false,
+            backlinks: (None, Instant::now(), vec![]),
+            tags: (Instant::now() - Duration::from_secs(60), vec![]),
+            hits: None,
+            history: None,
         };
         if let Some(p) = app.s.last_open.clone() {
             if p.is_file() {
@@ -178,8 +226,12 @@ impl App {
                 } else {
                     p
                 };
+                notes::snapshot(&target, &self.saved_text);
                 match std::fs::write(&target, &self.text) {
-                    Ok(_) => self.dirty = false,
+                    Ok(_) => {
+                        self.dirty = false;
+                        self.saved_text = self.text.clone();
+                    }
                     Err(e) => self.error = Some(format!("Не удалось сохранить «{}»: {e}", target.display())),
                 }
             }
@@ -193,6 +245,7 @@ impl App {
         }
         match std::fs::read_to_string(&p) {
             Ok(t) => {
+                self.saved_text = t.clone();
                 self.text = t;
                 self.open = Some(p.clone());
                 self.s.last_open = Some(p);
@@ -231,7 +284,10 @@ impl App {
             Action::Rename(p, name) => {
                 self.renaming = None;
                 self.flush();
-                fsops::rename(&p, &name).map(|np| self.rebase(&p, &np))
+                fsops::rename(&p, &name).map(|np| {
+                    notes::move_history(&p, &np);
+                    self.rebase(&p, &np)
+                })
             }
             Action::Delete(p) => {
                 self.flush();
@@ -245,6 +301,7 @@ impl App {
             Action::Move(src, dir) => {
                 self.flush();
                 fsops::move_into(&src, &dir).map(|np| {
+                    notes::move_history(&src, &np);
                     self.s.expanded.insert(dir);
                     self.rebase(&src, &np);
                 })
@@ -269,7 +326,7 @@ impl App {
         let filter = self.filter.trim().to_lowercase();
         for entry in fsops::list(dir) {
             let is_dir = entry.is_dir();
-            if !filter.is_empty() && !fsops::matches(&entry, &filter) {
+            if !filter.is_empty() && !self.hits.as_ref().is_some_and(|(_, h)| h.contains(&entry)) {
                 continue;
             }
             let expanded = self.s.expanded.contains(&entry) || (!filter.is_empty() && is_dir);
@@ -397,6 +454,62 @@ impl App {
         }
     }
 
+    /// Which notes and folders match the search: names, text, or `#tag`.
+    fn refresh_hits(&mut self) {
+        let f = self.filter.trim().to_lowercase();
+        if f.is_empty() {
+            self.hits = None;
+            return;
+        }
+        if self.hits.as_ref().is_some_and(|(q, _)| *q == f) {
+            return;
+        }
+        let mut set = HashSet::new();
+        for p in notes::all_notes(&self.s.root) {
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            let ok = match f.strip_prefix('#') {
+                Some(tag) => notes::tags(&text).iter().any(|t| t.starts_with(tag)),
+                None => notes::title(&p).to_lowercase().contains(&f) || text.to_lowercase().contains(&f),
+            };
+            if ok {
+                let mut cur = p.clone();
+                set.insert(p);
+                while let Some(parent) = cur.parent() {
+                    if parent == self.s.root || !parent.starts_with(&self.s.root) {
+                        break;
+                    }
+                    set.insert(parent.to_path_buf());
+                    cur = parent.to_path_buf();
+                }
+            }
+        }
+        self.hits = Some((f, set));
+    }
+
+    fn tag_bar(&mut self, ui: &mut egui::Ui) {
+        if self.tags.0.elapsed() > Duration::from_secs(4) {
+            self.tags = (Instant::now(), notes::all_tags(&self.s.root));
+        }
+        if self.tags.1.is_empty() {
+            return;
+        }
+        let tags: Vec<_> = self.tags.1.iter().take(14).cloned().collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            ui.spacing_mut().item_spacing = egui::vec2(5.0, 5.0);
+            for (t, n) in tags {
+                let q = format!("#{t}");
+                let on = self.filter.trim().eq_ignore_ascii_case(&q);
+                let txt = RichText::new(format!("#{t}")).size(11.5).color(if on { theme::TEXT } else { theme::ACCENT });
+                let b = egui::Button::new(txt).fill(if on { theme::DROP } else { theme::ACCENT_BG }).stroke(Stroke::NONE).corner_radius(10);
+                if ui.add(b).on_hover_text(format!("{n} {}", plural(n, "заметка", "заметки", "заметок"))).clicked() {
+                    self.filter = if on { String::new() } else { q };
+                }
+            }
+        });
+        ui.add_space(10.0);
+    }
+
     fn mode_switch(&mut self, ui: &mut egui::Ui) {
         let full = egui::Rect::from_min_size(ui.cursor().min + egui::vec2(12.0, 0.0), egui::vec2(ui.available_width() - 24.0, 34.0));
         ui.allocate_rect(full, Sense::hover());
@@ -465,16 +578,18 @@ impl App {
                     );
                 });
                 ui.add_space(12.0);
+                self.refresh_hits();
+                self.tag_bar(ui);
 
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
                     theme::caption(ui, "Заметки");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
-                        if theme::icon_button(ui, ic::FOLDER_PLUS, "Новая папка  ⇧⌘N").clicked() {
+                        if theme::icon_button(ui, ic::FOLDER_PLUS, &theme::keys("Новая папка  ⇧⌘N")).clicked() {
                             actions.push(Action::NewFolder(self.s.root.clone()));
                         }
-                        if theme::icon_button(ui, ic::NOTE_PENCIL, "Новая заметка  ⌘N").clicked() {
+                        if theme::icon_button(ui, ic::NOTE_PENCIL, &theme::keys("Новая заметка  ⌘N")).clicked() {
                             actions.push(Action::NewNote(self.s.root.clone()));
                         }
                     });
@@ -584,14 +699,18 @@ impl App {
             error_bar(ui, &e, &mut self.error);
         }
         let Some(path) = self.open.clone() else {
-            empty_state(ui, ic::NOTE_PENCIL, "Пустой лист", "⌘N — новая заметка,  ⇧⌘N — новая папка");
+            empty_state(ui, ic::NOTE_PENCIL, "Пустой лист", &theme::keys("⌘N — новая заметка,  ⌘P — найти заметку"));
             return;
         };
 
-        // Breadcrumbs
-        ui.add_space(14.0);
+        // Top bar: breadcrumbs and note tools. Hidden in focus mode.
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.add_space(24.0);
+            if self.focus_mode {
+                ui.label(RichText::new("Esc — выйти из режима фокуса").size(11.5).color(theme::FAINT.gamma_multiply(0.7)));
+                return;
+            }
             let rel = path.strip_prefix(&self.s.root).unwrap_or(&path).with_extension("");
             let parts: Vec<String> = rel.iter().map(|c| c.to_string_lossy().into_owned()).collect();
             for (i, part) in parts.iter().enumerate() {
@@ -601,24 +720,55 @@ impl App {
                     ui.label(RichText::new(ic::CARET_RIGHT).size(10.0).color(theme::FAINT));
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(14.0);
+                let r = theme::icon_button(ui, ic::EXPORT, "Экспорт");
+                egui::Popup::menu(&r).show(|ui| {
+                    ui.set_min_width(170.0);
+                    if ui.button(format!("{}  В PDF…", ic::FILE_PDF)).clicked() {
+                        self.export(&path, true);
+                        ui.close();
+                    }
+                    if ui.button(format!("{}  В HTML…", ic::FILE_HTML)).clicked() {
+                        self.export(&path, false);
+                        ui.close();
+                    }
+                });
+                if theme::icon_button(ui, ic::CLOCK_COUNTER_CLOCKWISE, "История версий").clicked() {
+                    self.flush();
+                    self.history = Some((notes::versions(&path), 0));
+                }
+                if theme::icon_button(ui, ic::CORNERS_OUT, &theme::keys("Режим фокуса  ⇧⌘F")).clicked() {
+                    self.focus_mode = true;
+                }
+                let (icon, tip) = if self.reading { (ic::PENCIL_SIMPLE, "Писать  ⌘E") } else { (ic::BOOK_OPEN, "Читать  ⌘E") };
+                if theme::icon_button(ui, icon, &theme::keys(tip)).clicked() {
+                    self.reading = !self.reading;
+                }
+            });
         });
 
-        // Status bar
-        egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(24, 8)))
-            .show_separator_line(false)
-            .show_inside(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let w = word_count(&self.text);
-                    let c = self.text.chars().count();
-                    let info = format!("{w} {}  ·  {c} {}", plural(w, "слово", "слова", "слов"), plural(c, "символ", "символа", "символов"));
-                    ui.label(RichText::new(info).size(11.5).color(theme::FAINT));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let t = if self.dirty { "Сохраняется…" } else { "Сохранено" };
-                        ui.label(RichText::new(t).size(11.5).color(theme::FAINT));
+        if !self.focus_mode {
+            egui::TopBottomPanel::bottom("status")
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(24, 8)))
+                .show_separator_line(false)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let w = word_count(&self.text);
+                        let c = self.text.chars().count();
+                        let info = format!("{w} {}  ·  {c} {}", plural(w, "слово", "слова", "слов"), plural(c, "символ", "символа", "символов"));
+                        ui.label(RichText::new(info).size(11.5).color(theme::FAINT));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let t = if self.dirty { "Сохраняется…" } else { "Сохранено" };
+                            ui.label(RichText::new(t).size(11.5).color(theme::FAINT));
+                            if !self.reading {
+                                ui.add_space(14.0);
+                                ui.label(RichText::new(theme::keys("⌘ + клик — открыть ссылку")).size(11.5).color(theme::FAINT.gamma_multiply(0.7)));
+                            }
+                        });
                     });
                 });
-            });
+        }
 
         // Fade the page in when another note opens.
         if self.shown_key.as_ref() != Some(&path) {
@@ -631,32 +781,342 @@ impl App {
         }
         ui.set_opacity(fade);
 
-        let look = writer::Look { size: self.s.font_size, style: self.s.text_style };
-        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| {
-            ui.fonts_mut(|f| f.layout_job(writer::layout(text.as_str(), &look, wrap)))
+        if self.backlinks.0.as_ref() != Some(&path) || self.backlinks.1.elapsed() > Duration::from_secs(5) {
+            self.backlinks = (Some(path.clone()), Instant::now(), notes::backlinks(&self.s.root, &path));
+        }
+
+        let editor_id = egui::Id::new("note-editor");
+        let focus_range = if self.focus_mode && !self.reading {
+            egui::TextEdit::load_state(ui.ctx(), editor_id).and_then(|st| st.cursor.char_range()).map(|r| {
+                let b = self.text.char_indices().nth(r.primary.index).map(|(i, _)| i).unwrap_or(self.text.len());
+                let start = self.text[..b].rfind("\n\n").map(|i| i + 2).unwrap_or(0);
+                let end = self.text[b..].find("\n\n").map(|i| b + i).unwrap_or(self.text.len());
+                start..end
+            })
+        } else {
+            None
         };
+
+        let mut open_link: Option<String> = None;
         egui::ScrollArea::vertical().auto_shrink(false).animated(self.s.smooth).show(ui, |ui| {
             let avail = ui.available_width();
             let col = if self.s.wide { avail - 120.0 } else { (self.s.font_size * 38.0).min(avail - 96.0) };
-            let side = ((avail - col) / 2.0).clamp(28.0, 127.0);
+            let side = ((avail - col) / 2.0).max(28.0);
             let lift = (1.0 - fade) * 10.0;
-            let edit = egui::TextEdit::multiline(&mut self.text)
-                .frame(false)
-                .layouter(&mut layouter)
-                .hint_text(RichText::new("Заголовок\n\nНачните писать…  **жирный**, *курсив*, # заголовок, - список, > цитата").color(theme::FAINT))
-                .margin(egui::Margin { left: side as i8, right: side as i8, top: (40.0 + lift) as i8, bottom: 120 })
-                .lock_focus(true)
-                .desired_width(f32::INFINITY);
-            let r = ui.add_sized(ui.available_size(), edit);
-            if self.focus_editor {
-                r.request_focus();
-                self.focus_editor = false;
+            let top = if self.focus_mode { 90.0 } else { 40.0 } + lift;
+            let bl_h = if self.backlinks.2.is_empty() { 0.0 } else { 60.0 + 30.0 * self.backlinks.2.len().min(6) as f32 };
+
+            if self.reading {
+                open_link = self.reading_view(ui, &path, side, top);
+            } else {
+                let look = writer::Look { size: self.s.font_size, style: self.s.text_style, focus: focus_range.clone(), reading: false, title: true };
+                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| ui.fonts_mut(|f| f.layout_job(writer::layout(text.as_str(), &look, wrap)));
+                let min_h = (ui.available_height() - bl_h).max(200.0);
+                let text_w = (avail - 2.0 * side).max(200.0);
+                let out = ui.horizontal(|ui| {
+                    ui.add_space(side);
+                    egui::TextEdit::multiline(&mut self.text)
+                    .id(editor_id)
+                    .frame(false)
+                    .layouter(&mut layouter)
+                    .hint_text(RichText::new("Заголовок\n\nНачните писать…  **жирный**, *курсив*, # заголовок, - список, > цитата, [[ссылка]], #тег").color(theme::FAINT))
+                    .margin(egui::Margin { left: 0, right: 0, top: top as i8, bottom: 60 })
+                    .lock_focus(true)
+                    .desired_width(text_w)
+                    .min_size(egui::vec2(text_w, min_h))
+                    .show(ui)
+                })
+                .inner;
+                if self.focus_editor {
+                    out.response.request_focus();
+                    self.focus_editor = false;
+                }
+                if out.response.changed() {
+                    self.dirty = true;
+                    self.last_edit = Instant::now();
+                }
+                if ui.input(|i| i.modifiers.command) && out.response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if out.response.clicked() && ui.input(|i| i.modifiers.command) {
+                    if let Some(pos) = out.response.interact_pointer_pos() {
+                        let c = out.galley.cursor_from_pos(pos - out.galley_pos);
+                        let b = self.text.char_indices().nth(c.index).map(|(i, _)| i).unwrap_or(self.text.len());
+                        open_link = notes::links(&self.text).into_iter().find(|(r, _)| r.contains(&b)).map(|(_, t)| t);
+                    }
+                }
             }
-            if r.changed() {
-                self.dirty = true;
-                self.last_edit = Instant::now();
+
+            if !self.backlinks.2.is_empty() && !self.focus_mode {
+                ui.horizontal(|ui| {
+                    ui.add_space(side);
+                    ui.vertical(|ui| {
+                        ui.set_width(col.min(avail - 2.0 * side));
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(format!("{}  Ссылаются на эту заметку", ic::LINK)).size(12.0).color(theme::FAINT));
+                        ui.add_space(4.0);
+                        for (p, line) in self.backlinks.2.clone().into_iter().take(6) {
+                            let r = ui.add(egui::Label::new(RichText::new(format!("{}  ", notes::title(&p))).color(theme::ACCENT).size(13.0)).sense(Sense::click()));
+                            let r = r.on_hover_text(line).on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if r.clicked() {
+                                self.open_note(p);
+                            }
+                        }
+                        ui.add_space(30.0);
+                    });
+                });
             }
         });
+        if let Some(t) = open_link {
+            self.follow_link(&path, &t);
+        }
+    }
+
+    /// Reading mode: Markdown markers hidden, images shown, links open on click.
+    fn reading_view(&mut self, ui: &mut egui::Ui, note: &Path, side: f32, top: f32) -> Option<String> {
+        let mut clicked = None;
+        let wrap = ui.available_width() - 2.0 * side;
+        ui.add_space(top);
+        // Split the note at image lines.
+        let mut segments: Vec<(String, Option<PathBuf>)> = vec![];
+        let mut buf = String::new();
+        for line in self.text.split_inclusive('\n') {
+            if let Some(img) = notes::image_line(note, line) {
+                segments.push((std::mem::take(&mut buf), None));
+                segments.push((String::new(), Some(img)));
+            } else {
+                buf.push_str(line);
+            }
+        }
+        segments.push((buf, None));
+        let mut first = true;
+        for (text, img) in segments {
+            ui.horizontal(|ui| {
+                ui.add_space(side);
+                if let Some(p) = img {
+                    ui.add(egui::Image::new(format!("file://{}", p.display())).max_width(wrap).max_height(560.0).corner_radius(8));
+                    return;
+                }
+                if text.trim().is_empty() && !first {
+                    return;
+                }
+                let look = writer::Look { size: self.s.font_size, style: self.s.text_style, focus: None, reading: true, title: first };
+                first = false;
+                let (job, links) = writer::build(text.trim_end_matches('\n'), &look, wrap);
+                let galley = ui.fonts_mut(|f| f.layout_job(job));
+                let (rect, resp) = ui.allocate_exact_size(galley.size(), Sense::click());
+                if let Some(pos) = resp.hover_pos() {
+                    let c = galley.cursor_from_pos(pos - rect.min);
+                    let b = galley.job.text.char_indices().nth(c.index).map(|(i, _)| i).unwrap_or(0);
+                    if let Some((_, t)) = links.iter().find(|(r, _)| r.contains(&b)) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if resp.clicked() {
+                            clicked = Some(t.clone());
+                        }
+                    }
+                }
+                ui.painter().galley(rect.min, galley, theme::TEXT);
+            });
+            ui.add_space(10.0);
+        }
+        ui.add_space(60.0);
+        clicked
+    }
+
+    /// Opens the note a [[link]] names, creating it next to the current note if there is none.
+    fn follow_link(&mut self, from: &Path, target: &str) {
+        if let Some(p) = notes::resolve(&self.s.root, target) {
+            self.open_note(p);
+            return;
+        }
+        let name = target.split('|').next().unwrap_or(target).trim();
+        if fsops::display_name(Path::new(name)).is_empty() || name.contains(['/', '\\']) {
+            self.error = Some(format!("Не удалось создать заметку «{name}»"));
+            return;
+        }
+        let dir = from.parent().map(Path::to_path_buf).unwrap_or_else(|| self.s.root.clone());
+        let p = dir.join(format!("{name}.md"));
+        match std::fs::write(&p, format!("{name}\n\n")) {
+            Ok(()) => self.open_note(p),
+            Err(e) => self.error = Some(format!("Не удалось создать заметку: {e}")),
+        }
+    }
+
+    fn export(&mut self, note: &Path, pdf: bool) {
+        self.flush();
+        let name = notes::title(note);
+        let (ext, label) = if pdf { ("pdf", "PDF") } else { ("html", "HTML") };
+        let Some(out) = rfd::FileDialog::new().set_file_name(format!("{name}.{ext}")).add_filter(label, &[ext]).save_file() else { return };
+        let res = if pdf {
+            pdf::write(&out, &name, &pdf::from_markdown(&self.text))
+        } else {
+            std::fs::write(&out, notes::to_html(note, &self.text)).map_err(|e| format!("Не удалось сохранить: {e}"))
+        };
+        if let Err(e) = res {
+            self.error = Some(e);
+        }
+    }
+
+    /// Inserts dropped images into the open note at the cursor.
+    fn drop_images(&mut self, ctx: &egui::Context) {
+        let files: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        if files.is_empty() || self.s.mode != Mode::Notes {
+            return;
+        }
+        let Some(note) = self.open.clone() else { return };
+        let mut insert = String::new();
+        for f in files {
+            if !notes::is_image(&f) {
+                self.error = Some("В заметку можно перетащить картинку: PNG, JPG, GIF или WebP".into());
+                continue;
+            }
+            match notes::attach_image(&note, &f) {
+                Ok(md) => insert += &format!("\n{md}\n"),
+                Err(e) => self.error = Some(e),
+            }
+        }
+        if insert.is_empty() {
+            return;
+        }
+        let at = egui::TextEdit::load_state(ctx, egui::Id::new("note-editor"))
+            .and_then(|st| st.cursor.char_range())
+            .and_then(|r| self.text.char_indices().nth(r.primary.index).map(|(i, _)| i))
+            .unwrap_or(self.text.len());
+        let at = self.text[at..].find('\n').map(|i| at + i).unwrap_or(self.text.len());
+        self.text.insert_str(at, &insert);
+        self.dirty = true;
+        self.last_edit = Instant::now();
+    }
+
+    fn quick_window(&mut self, ctx: &egui::Context) {
+        let Some(q) = &mut self.quick else { return };
+        let all = notes::all_notes(&self.s.root);
+        let query = q.query.trim().to_lowercase();
+        let mut found: Vec<(usize, PathBuf, String)> = all
+            .into_iter()
+            .filter_map(|p| {
+                let rel = p.strip_prefix(&self.s.root).unwrap_or(&p).with_extension("").display().to_string();
+                fuzzy(&notes::title(&p), &query).or_else(|| fuzzy(&rel, &query).map(|s| s + 50)).map(|s| (s, p, rel))
+            })
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
+        found.truncate(12);
+        let (up, down, enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        if down {
+            q.sel = (q.sel + 1).min(found.len().saturating_sub(1));
+        }
+        if up {
+            q.sel = q.sel.saturating_sub(1);
+        }
+        let mut pick = None;
+        let mut close = esc;
+        egui::Window::new("quick")
+            .title_bar(false)
+            .resizable(false)
+            .fixed_size([520.0, 0.0])
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 90.0))
+            .show(ctx, |ui| {
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut q.query)
+                        .hint_text(format!("{}  Найти заметку", ic::MAGNIFYING_GLASS))
+                        .desired_width(f32::INFINITY)
+                        .font(theme::font(15.0))
+                        .margin(egui::vec2(10.0, 8.0)),
+                );
+                if !q.focus {
+                    r.request_focus();
+                    q.focus = true;
+                }
+                if r.changed() {
+                    q.sel = 0;
+                }
+                ui.add_space(4.0);
+                if found.is_empty() {
+                    ui.label(RichText::new("Ничего не найдено. Enter создаст такую заметку").size(12.5).color(theme::FAINT));
+                }
+                for (k, (_, p, rel)) in found.iter().enumerate() {
+                    let on = k == q.sel;
+                    let txt = RichText::new(format!("{}  {}", ic::FILE_TEXT, rel)).size(13.5).color(if on { theme::TEXT } else { theme::MUTED });
+                    let b = egui::Button::new(txt).fill(if on { theme::SELECTED } else { egui::Color32::TRANSPARENT }).stroke(Stroke::NONE).min_size(egui::vec2(ui.available_width(), 30.0));
+                    if ui.add(b).clicked() {
+                        pick = Some(p.clone());
+                    }
+                }
+                ui.add_space(2.0);
+                ui.label(RichText::new("↑↓ выбрать   Enter открыть   Esc закрыть").size(11.0).color(theme::FAINT));
+            });
+        if enter {
+            pick = found.get(q.sel).map(|f| f.1.clone());
+            if pick.is_none() && !q.query.trim().is_empty() {
+                let name = q.query.trim().to_string();
+                self.quick = None;
+                self.s.mode = Mode::Notes;
+                let from = self.open.clone().unwrap_or_else(|| self.s.root.join("x.md"));
+                self.follow_link(&from, &name);
+                return;
+            }
+        }
+        if let Some(p) = pick {
+            self.s.mode = Mode::Notes;
+            self.open_note(p);
+            close = true;
+        }
+        if close {
+            self.quick = None;
+        }
+    }
+
+    fn history_window(&mut self, ctx: &egui::Context) {
+        let Some((list, sel)) = &mut self.history else { return };
+        let mut open = true;
+        let mut restore = None;
+        egui::Window::new(RichText::new("История версий").size(15.0))
+            .open(&mut open)
+            .collapsible(false)
+            .default_size([760.0, 520.0])
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                if list.is_empty() {
+                    ui.label(RichText::new("Копий пока нет. Они сохраняются сами, не чаще раза в 5 минут, пока вы пишете.").color(theme::FAINT));
+                    return;
+                }
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(190.0);
+                        egui::ScrollArea::vertical().id_salt("hist-list").max_height(440.0).show(ui, |ui| {
+                            for (k, (_, label)) in list.iter().enumerate() {
+                                if ui.selectable_label(*sel == k, RichText::new(label).size(13.0)).clicked() {
+                                    *sel = k;
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        let text = std::fs::read_to_string(&list[*sel].0).unwrap_or_default();
+                        egui::ScrollArea::vertical().id_salt("hist-text").max_height(400.0).show(ui, |ui| {
+                            ui.add(egui::Label::new(RichText::new(&text).size(13.5).color(theme::MUTED)).wrap());
+                        });
+                        ui.add_space(8.0);
+                        if theme::pill(ui, ic::ARROW_COUNTER_CLOCKWISE, "Восстановить эту версию").clicked() {
+                            restore = Some(text);
+                        }
+                    });
+                });
+            });
+        if let Some(t) = restore {
+            if let Some(p) = self.open.clone() {
+                notes::snapshot(&p, &self.text); // the current text stays in history too
+            }
+            self.text = t;
+            self.dirty = true;
+            self.last_edit = Instant::now();
+            open = false;
+        }
+        if !open {
+            self.history = None;
+        }
     }
 
     fn ui(&mut self, ctx: &egui::Context) {
@@ -670,6 +1130,30 @@ impl App {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
             )
         });
+        let (quick, read, focus, esc) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::P),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
+                i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if quick {
+            self.quick = if self.quick.is_some() { None } else { Some(Quick { query: String::new(), sel: 0, focus: false }) };
+        }
+        if self.s.mode == Mode::Notes && self.open.is_some() {
+            if read {
+                self.reading = !self.reading;
+            }
+            if focus {
+                self.focus_mode = !self.focus_mode;
+            }
+        }
+        if esc && self.focus_mode && self.quick.is_none() {
+            self.focus_mode = false;
+        }
+        let focus_view = self.focus_mode && self.s.mode == Mode::Notes && self.open.is_some();
+        self.drop_images(ctx);
         let target_dir = self
             .open
             .as_ref()
@@ -689,7 +1173,9 @@ impl App {
             self.inv.flush();
         }
 
-        self.sidebar(ctx, &mut actions);
+        if !focus_view {
+            self.sidebar(ctx, &mut actions);
+        }
 
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::BG)).show(ctx, |ui| {
             if self.s.mode == Mode::Investigations {
@@ -702,6 +1188,8 @@ impl App {
         if self.show_settings {
             self.settings_window(ctx);
         }
+        self.quick_window(ctx);
+        self.history_window(ctx);
 
         for a in actions {
             self.apply(a);

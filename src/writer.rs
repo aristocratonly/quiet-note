@@ -8,6 +8,12 @@ use eframe::egui::{text::LayoutJob, Color32, FontFamily, FontId, Stroke, TextFor
 pub struct Look {
     pub size: f32,
     pub style: TextStyle,
+    /// Byte range of the paragraph being written; other text is dimmed (focus mode).
+    pub focus: Option<std::ops::Range<usize>>,
+    /// Reading mode: Markdown markers are hidden.
+    pub reading: bool,
+    /// Treat the first non-empty line as the title.
+    pub title: bool,
 }
 
 impl Look {
@@ -40,64 +46,181 @@ const CODE_BG: Color32 = Color32::from_rgb(0x1d, 0x1f, 0x25);
 
 /// Builds the styled layout for the whole note.
 pub fn layout(text: &str, look: &Look, wrap: f32) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = wrap;
+    build(text, look, wrap).0
+}
+
+/// Layout plus the [[link]] spans as byte ranges in the job's text.
+pub fn build(text: &str, look: &Look, wrap: f32) -> (LayoutJob, Vec<(std::ops::Range<usize>, String)>) {
+    let mut b = B { job: LayoutJob::default(), links: vec![], look };
+    b.job.wrap.max_width = wrap;
     let s = look.size;
-    let mut first = true;
+    let mut first = look.title;
+    let mut offset = 0;
     for line in text.split_inclusive('\n') {
+        let start_sections = b.job.sections.len();
+        let line_range = offset..offset + line.len();
+        offset += line.len();
+        b.line(line, s, &mut first);
+        if let Some(f) = &look.focus {
+            let inside = line_range.start <= f.end && f.start <= line_range.end.saturating_sub(1).max(line_range.start);
+            if !inside {
+                for sec in &mut b.job.sections[start_sections..] {
+                    sec.format.color = sec.format.color.gamma_multiply(0.22);
+                }
+            }
+        }
+    }
+    (b.job, b.links)
+}
+
+struct B<'a> {
+    job: LayoutJob,
+    links: Vec<(std::ops::Range<usize>, String)>,
+    look: &'a Look,
+}
+
+impl B<'_> {
+    fn put(&mut self, text: &str, f: TextFormat) {
+        self.job.append(text, 0.0, f);
+    }
+
+    /// A Markdown marker: dimmed when writing, hidden (or replaced) when reading.
+    fn mark(&mut self, text: &str, shown: &str, f: TextFormat) {
+        if self.look.reading {
+            if !shown.is_empty() {
+                self.put(shown, f);
+            }
+        } else {
+            self.put(text, f);
+        }
+    }
+
+    fn line(&mut self, line: &str, s: f32, first: &mut bool) {
+        let look = self.look;
         let body = line.strip_suffix('\n').unwrap_or(line);
         let nl = if body.len() < line.len() { "\n" } else { "" };
         let trimmed = body.trim_start();
         let indent = &body[..body.len() - trimmed.len()];
 
-        if first && !body.trim().is_empty() {
-            // The first line is the title.
-            first = false;
+        if *first && !body.trim().is_empty() {
+            *first = false;
             let (marks, rest) = split_heading(body);
-            job.append(marks, 0.0, look.fmt(s * 1.6, false, false, MARK));
-            job.append(rest, 0.0, look.fmt(s * 1.6, true, false, theme::TEXT));
-            job.append(nl, 0.0, look.fmt(s * 1.6, false, false, BODY));
-            continue;
+            self.mark(marks, "", look.fmt(s * 1.6, false, false, MARK));
+            self.inline(rest, s * 1.6, true, false, theme::TEXT);
+            self.put(nl, look.fmt(s * 1.6, false, false, BODY));
+            return;
         }
         if !body.trim().is_empty() {
-            first = false;
+            *first = false;
         }
 
-        if trimmed.starts_with('#') && trimmed.trim_start_matches('#').starts_with(' ') {
+        if trimmed.starts_with("![") && trimmed.contains("](") {
+            let alt = trimmed[2..].split(']').next().unwrap_or("");
+            let shown = format!("{}  {}", egui_phosphor::regular::IMAGE, if alt.is_empty() { "картинка" } else { alt });
+            let f = look.fmt(s * 0.9, false, false, theme::FAINT);
+            if look.reading {
+                self.put(&shown, f);
+            } else {
+                self.put(body, f);
+            }
+        } else if trimmed.starts_with('#') && trimmed.trim_start_matches('#').starts_with(' ') {
             let level = trimmed.chars().take_while(|c| *c == '#').count();
             let k = match level { 1 => 1.45, 2 => 1.25, _ => 1.1 };
             let (marks, rest) = split_heading(body);
-            job.append(marks, 0.0, look.fmt(s * k, false, false, MARK));
-            inline(&mut job, rest, look, s * k, true, false, theme::TEXT);
+            self.mark(marks, "", look.fmt(s * k, false, false, MARK));
+            self.inline(rest, s * k, true, false, theme::TEXT);
         } else if let Some(rest) = trimmed.strip_prefix("> ") {
-            job.append(indent, 0.0, look.fmt(s, false, false, BODY));
-            job.append("> ", 0.0, look.fmt(s, true, false, theme::ACCENT.gamma_multiply(0.7)));
-            inline(&mut job, rest, look, s, false, true, QUOTE);
+            self.put(indent, look.fmt(s, false, false, BODY));
+            self.mark("> ", &format!("{}  ", egui_phosphor::regular::QUOTES), look.fmt(s, true, false, theme::ACCENT.gamma_multiply(0.7)));
+            self.inline(rest, s, false, true, QUOTE);
         } else if let Some(rest) = trimmed.strip_prefix("- [ ] ").or_else(|| trimmed.strip_prefix("- [x] ")) {
             let done = trimmed.starts_with("- [x]");
-            job.append(indent, 0.0, look.fmt(s, false, false, BODY));
-            job.append(&trimmed[..6], 0.0, look.fmt(s, false, false, if done { theme::GOOD } else { MARK }));
+            self.put(indent, look.fmt(s, false, false, BODY));
+            let shown = if done { "☑  " } else { "☐  " };
+            self.mark(&trimmed[..6], shown, look.fmt(s, false, false, if done { theme::GOOD } else { MARK }));
             let mut f = look.fmt(s, false, false, if done { theme::FAINT } else { BODY });
             if done {
                 f.strikethrough = Stroke::new(1.0, theme::FAINT);
             }
-            job.append(rest, 0.0, f);
+            self.put(rest, f);
         } else if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-            job.append(indent, 0.0, look.fmt(s, false, false, BODY));
-            job.append(&trimmed[..2], 0.0, look.fmt(s, true, false, theme::ACCENT.gamma_multiply(0.8)));
-            inline(&mut job, rest, look, s, false, false, BODY);
+            self.put(indent, look.fmt(s, false, false, BODY));
+            self.mark(&trimmed[..2], "•  ", look.fmt(s, true, false, theme::ACCENT.gamma_multiply(0.8)));
+            self.inline(rest, s, false, false, BODY);
         } else if let Some(n) = numbered(trimmed) {
-            job.append(indent, 0.0, look.fmt(s, false, false, BODY));
-            job.append(&trimmed[..n], 0.0, look.fmt(s, false, false, theme::ACCENT.gamma_multiply(0.8)));
-            inline(&mut job, &trimmed[n..], look, s, false, false, BODY);
+            self.put(indent, look.fmt(s, false, false, BODY));
+            self.put(&trimmed[..n], look.fmt(s, false, false, theme::ACCENT.gamma_multiply(0.8)));
+            self.inline(&trimmed[n..], s, false, false, BODY);
         } else if trimmed == "---" || trimmed == "***" {
-            job.append(body, 0.0, look.fmt(s, false, false, MARK));
+            self.mark(body, "⸻", look.fmt(s, false, false, MARK));
         } else {
-            inline(&mut job, body, look, s, false, false, BODY);
+            self.inline(body, s, false, false, BODY);
         }
-        job.append(nl, 0.0, look.fmt(s, false, false, BODY));
+        self.put(nl, look.fmt(s, false, false, BODY));
     }
-    job
+
+    /// Plain text with #tags coloured.
+    fn plain(&mut self, text: &str, size: f32, bold: bool, italic: bool, color: Color32) {
+        let look = self.look;
+        let mut last = 0;
+        for (i, _) in text.match_indices('#') {
+            if i < last || text[..i].chars().next_back().is_some_and(|c| !c.is_whitespace() && c != '(') {
+                continue;
+            }
+            let tag_len: usize = text[i + 1..].chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/')).map(char::len_utf8).sum();
+            if tag_len == 0 {
+                continue;
+            }
+            self.put(&text[last..i], look.fmt(size, bold, italic, color));
+            let mut f = look.fmt(size * 0.92, false, false, theme::ACCENT);
+            f.background = theme::ACCENT_BG;
+            self.put(&text[i..i + 1 + tag_len], f);
+            last = i + 1 + tag_len;
+        }
+        self.put(&text[last..], look.fmt(size, bold, italic, color));
+    }
+
+    /// **bold**, *italic*, `code` and [[links]] inside a line.
+    fn inline(&mut self, line: &str, size: f32, bold: bool, italic: bool, color: Color32) {
+        let look = self.look;
+        let mut rest = line;
+        while !rest.is_empty() {
+            let next = ["**", "`", "[[", "*"].iter().filter_map(|m| rest.find(m).map(|i| (i, *m))).min_by_key(|(i, m)| (*i, std::cmp::Reverse(m.len())));
+            let Some((i, m)) = next else {
+                self.plain(rest, size, bold, italic, color);
+                return;
+            };
+            let close = match m { "[[" => "]]", x => x };
+            let after = &rest[i + m.len()..];
+            let Some(j) = after.find(close).filter(|j| *j > 0) else {
+                self.plain(&rest[..i + m.len()], size, bold, italic, color);
+                rest = after;
+                continue;
+            };
+            self.plain(&rest[..i], size, bold, italic, color);
+            let inner = &after[..j];
+            self.mark(m, "", look.fmt(size, false, false, MARK));
+            match m {
+                "**" => self.put(inner, look.fmt(size, true, italic, theme::TEXT)),
+                "*" => self.put(inner, look.fmt(size, bold, true, color)),
+                "`" => {
+                    let mut f = look.fmt(size * 0.88, false, false, theme::WARN);
+                    f.font_id.family = FontFamily::Monospace;
+                    f.background = CODE_BG;
+                    self.put(inner, f);
+                }
+                _ => {
+                    let target = inner.split('|').next().unwrap_or(inner).to_string();
+                    let shown = if self.look.reading { inner.split('|').next_back().unwrap_or(inner) } else { inner };
+                    let start = self.job.text.len();
+                    self.put(shown, look.fmt(size, bold, italic, theme::ACCENT));
+                    self.links.push((start..self.job.text.len(), target));
+                }
+            }
+            self.mark(close, "", look.fmt(size, false, false, MARK));
+            rest = &after[j + close.len()..];
+        }
+    }
 }
 
 fn split_heading(line: &str) -> (&str, &str) {
@@ -114,43 +237,6 @@ fn split_heading(line: &str) -> (&str, &str) {
 fn numbered(t: &str) -> Option<usize> {
     let d = t.chars().take_while(|c| c.is_ascii_digit()).count();
     (d > 0 && d < 4 && t[d..].starts_with(". ")).then_some(d + 2)
-}
-
-/// **bold**, *italic*, `code` and [[links]] inside a line. Markers stay visible but dimmed.
-fn inline(job: &mut LayoutJob, line: &str, look: &Look, size: f32, bold: bool, italic: bool, color: Color32) {
-    let mut rest = line;
-    while !rest.is_empty() {
-        let next = ["**", "`", "[[", "*"].iter().filter_map(|m| rest.find(m).map(|i| (i, *m))).min_by_key(|(i, m)| (*i, std::cmp::Reverse(m.len())));
-        let Some((i, m)) = next else {
-            job.append(rest, 0.0, look.fmt(size, bold, italic, color));
-            return;
-        };
-        let close = match m { "[[" => "]]", x => x };
-        let after = &rest[i + m.len()..];
-        let Some(j) = after.find(close).filter(|j| *j > 0) else {
-            job.append(&rest[..i + m.len()], 0.0, look.fmt(size, bold, italic, color));
-            rest = after;
-            continue;
-        };
-        job.append(&rest[..i], 0.0, look.fmt(size, bold, italic, color));
-        let inner = &after[..j];
-        job.append(m, 0.0, look.fmt(size, false, false, MARK));
-        match m {
-            "**" => job.append(inner, 0.0, look.fmt(size, true, italic, theme::TEXT)),
-            "*" => job.append(inner, 0.0, look.fmt(size, bold, true, color)),
-            "`" => {
-                let mut f = look.fmt(size * 0.88, false, false, theme::WARN);
-                f.font_id.family = FontFamily::Monospace;
-                f.background = CODE_BG;
-                job.append(inner, 0.0, f);
-            }
-            _ => {
-                job.append(inner, 0.0, look.fmt(size, bold, italic, theme::ACCENT));
-            }
-        }
-        job.append(close, 0.0, look.fmt(size, false, false, MARK));
-        rest = &after[j + close.len()..];
-    }
 }
 
 /// Smooth 0→1 easing for fades (ease-out cubic).

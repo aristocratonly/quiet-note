@@ -24,6 +24,7 @@ use eframe::egui::Color32;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::vault;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -286,26 +287,39 @@ pub struct Case {
     pub pos: HashMap<String, [f32; 2]>,
     dirty: HashSet<Key>,
     pos_dirty: bool,
+    /// Set for an unlocked encrypted case: every file is read and written through it.
+    pub secret: Option<vault::Key>,
 }
 
 impl Case {
     pub fn load(dir: &Path) -> Case {
-        let read = |p: PathBuf| fs::read_to_string(p).unwrap_or_default();
-        let overview = Doc::parse("", &read(dir.join("case.md")));
+        Self::load_with(dir, None)
+    }
+
+    pub fn load_with(dir: &Path, secret: Option<vault::Key>) -> Case {
+        let mut c = Case { dir: dir.into(), overview: Doc::new("", Kind::Other), entities: vec![], pos: HashMap::new(), dirty: HashSet::new(), pos_dirty: false, secret };
+        c.overview = Doc::parse("", &c.read_text("case.md"));
         let mut entities: Vec<Doc> = fs::read_dir(dir.join("entities"))
-            .map(|rd| {
-                rd.flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e == "md"))
-                    .map(|p| {
-                        let name = p.file_stem().unwrap().to_string_lossy().into_owned();
-                        Doc::parse(&name, &read(p))
-                    })
-                    .collect()
+            .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| match &c.secret {
+                Some(k) if vault::is_enc(&p) => {
+                    let t = String::from_utf8(k.open(&fs::read(&p).ok()?)?).ok()?;
+                    let (first, rest) = t.split_once('\n').unwrap_or((&t, ""));
+                    Some(Doc::parse(first.strip_prefix("name: ")?, rest))
+                }
+                None if p.extension().is_some_and(|e| e == "md") => {
+                    let name = p.file_stem()?.to_string_lossy().into_owned();
+                    Some(Doc::parse(&name, &fs::read_to_string(&p).unwrap_or_default()))
+                }
+                _ => None,
             })
-            .unwrap_or_default();
+            .collect();
         entities.sort_by_key(|e| e.name.to_lowercase());
-        let pos = read(dir.join("graph.pos"))
+        c.entities = entities;
+        c.pos = c
+            .read_text("graph.pos")
             .lines()
             .filter_map(|l| {
                 let mut it = l.rsplitn(3, '\t');
@@ -314,7 +328,107 @@ impl Case {
                 Some((it.next()?.to_string(), [x, y]))
             })
             .collect();
-        Case { dir: dir.into(), overview, entities, pos, dirty: HashSet::new(), pos_dirty: false }
+        c
+    }
+
+    /// Reads a case file (relative path), decrypting it when the case is encrypted.
+    pub fn read_bytes(&self, rel: &str) -> Option<Vec<u8>> {
+        let p = self.dir.join(rel);
+        match &self.secret {
+            Some(k) => k.open(&fs::read(vault::enc_path(&p)).ok()?),
+            None => fs::read(p).ok(),
+        }
+    }
+
+    fn read_text(&self, rel: &str) -> String {
+        self.read_bytes(rel).and_then(|b| String::from_utf8(b).ok()).unwrap_or_default()
+    }
+
+    pub fn write_bytes(&self, rel: &str, data: &[u8]) -> std::io::Result<()> {
+        let p = self.dir.join(rel);
+        match &self.secret {
+            Some(k) => fs::write(vault::enc_path(&p), k.seal(data)),
+            None => fs::write(p, data),
+        }
+    }
+
+    fn write_entity(&self, d: &Doc) -> std::io::Result<()> {
+        match &self.secret {
+            Some(k) => fs::write(self.entity_path(&d.name), k.seal(format!("name: {}\n{}", d.name, d.serialize()).as_bytes())),
+            None => fs::write(self.entity_path(&d.name), d.serialize()),
+        }
+    }
+
+    /// A path another app can open: the file itself, or a decrypted temporary copy.
+    pub fn openable(&self, rel: &str) -> Result<PathBuf, String> {
+        let p = self.dir.join(rel);
+        match &self.secret {
+            Some(k) if vault::enc_path(&p).exists() => vault::to_temp(k, &vault::enc_path(&p)),
+            _ => Ok(p),
+        }
+    }
+
+    /// Encrypts every file of a plain case with a new password.
+    pub fn encrypt(dir: &Path, password: &str) -> Result<(), String> {
+        let mut c = Case::load(dir);
+        let key = vault::create(dir, password)?;
+        c.secret = Some(key.clone());
+        c.dirty.insert(None);
+        for i in 0..c.entities.len() {
+            c.dirty.insert(Some(i));
+        }
+        c.pos_dirty = true;
+        c.save()?;
+        let err = |e: std::io::Error| format!("Не удалось зашифровать: {e}");
+        for p in [dir.join("case.md"), dir.join("graph.pos")] {
+            if p.exists() {
+                fs::remove_file(p).map_err(err)?;
+            }
+        }
+        for d in &c.entities {
+            let p = dir.join("entities").join(format!("{}.md", d.name));
+            if p.exists() {
+                fs::remove_file(p).map_err(err)?;
+            }
+        }
+        for p in fs::read_dir(dir.join("files")).map(|r| r.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default() {
+            if p.is_file() && !vault::is_enc(&p) {
+                let data = fs::read(&p).map_err(err)?;
+                fs::write(vault::enc_path(&p), key.seal(&data)).map_err(err)?;
+                fs::remove_file(&p).map_err(err)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Turns an unlocked encrypted case back into plain files.
+    pub fn decrypt(dir: &Path, key: vault::Key) -> Result<(), String> {
+        let mut c = Case::load_with(dir, Some(key.clone()));
+        let err = |e: std::io::Error| format!("Не удалось снять шифрование: {e}");
+        let enc_files: Vec<PathBuf> = ["", "entities"]
+            .iter()
+            .flat_map(|sub| fs::read_dir(dir.join(sub)).map(|r| r.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default())
+            .filter(|p| vault::is_enc(p))
+            .collect();
+        c.secret = None;
+        c.dirty.insert(None);
+        for i in 0..c.entities.len() {
+            c.dirty.insert(Some(i));
+        }
+        c.pos_dirty = true;
+        c.save()?;
+        for p in enc_files {
+            fs::remove_file(p).map_err(err)?;
+        }
+        for p in fs::read_dir(dir.join("files")).map(|r| r.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default() {
+            if vault::is_enc(&p) {
+                let plain = key.open(&fs::read(&p).map_err(err)?).ok_or("Не удалось расшифровать файл")?;
+                fs::write(p.with_extension(""), plain).map_err(err)?;
+                fs::remove_file(&p).map_err(err)?;
+            }
+        }
+        fs::remove_file(dir.join(vault::LOCK_FILE)).map_err(err)?;
+        Ok(())
     }
 
     pub fn name(&self) -> String {
@@ -332,7 +446,10 @@ impl Case {
     }
 
     fn entity_path(&self, name: &str) -> PathBuf {
-        self.dir.join("entities").join(format!("{name}.md"))
+        match &self.secret {
+            Some(k) => self.dir.join("entities").join(format!("{}.{}", k.hidden_name(name), vault::EXT)),
+            None => self.dir.join("entities").join(format!("{name}.md")),
+        }
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {
@@ -343,10 +460,10 @@ impl Case {
         let err = |e: std::io::Error| format!("Не удалось сохранить: {e}");
         for k in std::mem::take(&mut self.dirty) {
             match k {
-                None => fs::write(self.dir.join("case.md"), self.overview.serialize()).map_err(err)?,
+                None => self.write_bytes("case.md", self.overview.serialize().as_bytes()).map_err(err)?,
                 Some(i) => {
                     if let Some(e) = self.entities.get(i) {
-                        fs::write(self.entity_path(&e.name), e.serialize()).map_err(err)?;
+                        self.write_entity(e).map_err(err)?;
                     }
                 }
             }
@@ -356,7 +473,7 @@ impl Case {
             for (n, [x, y]) in &self.pos {
                 s += &format!("{n}\t{x:.0}\t{y:.0}\n");
             }
-            fs::write(self.dir.join("graph.pos"), s).map_err(err)?;
+            self.write_bytes("graph.pos", s.as_bytes()).map_err(err)?;
             self.pos_dirty = false;
         }
         Ok(())
@@ -387,6 +504,7 @@ impl Case {
             fs::rename(from, to).map_err(|e| format!("Не удалось переименовать: {e}"))?;
         }
         self.entities[i].name = new.clone();
+        self.touch(Some(i)); // encrypted files carry the name inside
         for j in 0..self.entities.len() {
             let mut hit = false;
             for l in self.entities[j].links.iter_mut().filter(|l| l.target == old) {
@@ -423,9 +541,13 @@ impl Case {
         fs::create_dir_all(&files).map_err(|e| e.to_string())?;
         let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or("file".into());
         let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-        let name = unique_name(&stem, |n| files.join(format!("{n}{ext}")).exists());
+        let name = unique_name(&stem, |n| {
+            let p = files.join(format!("{n}{ext}"));
+            p.exists() || vault::enc_path(&p).exists()
+        });
         let file = format!("{name}{ext}");
-        fs::copy(src, files.join(&file)).map_err(|e| format!("Не удалось приложить файл: {e}"))?;
+        let data = fs::read(src).map_err(|e| format!("Не удалось приложить файл: {e}"))?;
+        self.write_bytes(&format!("files/{file}"), &data).map_err(|e| format!("Не удалось приложить файл: {e}"))?;
         Ok(format!("files/{file}"))
     }
 
@@ -507,6 +629,46 @@ mod tests {
         let p = c2.find("Человек").unwrap();
         assert_eq!(c2.entities[p].links[0].target, "example.com");
         assert!(dir.join("entities/example.com.md").exists());
+    }
+
+    #[test]
+    fn encrypt_roundtrip() {
+        let root = std::env::temp_dir().join(format!("qn-enc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let dir = create_case(&root).unwrap();
+        let mut c = Case::load(&dir);
+        let a = c.add_entity(Kind::Nick);
+        c.rename_entity(a, "@dark_fox").unwrap();
+        c.overview.notes = "секретная заметка".into();
+        c.touch(None);
+        c.save().unwrap();
+        let src = root.join("evidence.txt");
+        fs::write(&src, "улика").unwrap();
+        let rel = c.attach(&src).unwrap();
+        Case::encrypt(&dir, "пароль123").unwrap();
+        // Nothing readable is left on disk.
+        assert!(!dir.join("case.md").exists());
+        assert!(!dir.join("entities/@dark_fox.md").exists());
+        assert!(!dir.join(&rel).exists());
+        for e in fs::read_dir(dir.join("entities")).unwrap().flatten() {
+            assert!(!String::from_utf8_lossy(&fs::read(e.path()).unwrap()).contains("dark_fox"));
+        }
+        assert!(crate::vault::unlock(&dir, "не тот").is_err());
+        let k = crate::vault::unlock(&dir, "пароль123").unwrap();
+        let mut c2 = Case::load_with(&dir, Some(k.clone()));
+        assert_eq!(c2.overview.notes, "секретная заметка");
+        assert!(c2.find("@dark_fox").is_some());
+        assert_eq!(c2.read_bytes(&rel).unwrap(), "улика".as_bytes());
+        let i = c2.find("@dark_fox").unwrap();
+        c2.rename_entity(i, "@fox").unwrap();
+        let k = crate::vault::unlock(&dir, "пароль123").unwrap();
+        assert!(Case::load_with(&dir, Some(k.clone())).find("@fox").is_some());
+        Case::decrypt(&dir, k).unwrap();
+        let c3 = Case::load(&dir);
+        assert!(c3.find("@fox").is_some());
+        assert_eq!(fs::read_to_string(dir.join(&rel)).unwrap(), "улика");
+        assert!(!crate::vault::is_locked(&dir));
     }
 
     #[test]
