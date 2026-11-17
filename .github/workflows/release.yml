@@ -39,9 +39,9 @@ jobs:
       - name: Package Linux
         if: runner.os == 'Linux'
         run: |
-          mkdir -p "Quiet Note"
-          cp target/release/quiet-note packaging/quiet-note.desktop README.md "Quiet Note/"
-          tar -czf ${{ matrix.asset }} "Quiet Note"
+          mkdir -p quiet-note-linux
+          cp target/release/quiet-note packaging/quiet-note.desktop README.md quiet-note-linux/
+          tar -czf ${{ matrix.asset }} quiet-note-linux
 
       - name: Package Windows
         if: runner.os == 'Windows'
