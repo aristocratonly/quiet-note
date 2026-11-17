@@ -1500,11 +1500,19 @@ fn force_layout(c: &mut Case) {
         .filter(|(i, j)| i != j)
         .collect();
     let k = 170.0f32;
+    let mut linked = vec![false; n];
+    for &(i, j) in &edges {
+        linked[i] = true;
+        linked[j] = true;
+    }
     for step in 0..400 {
         let t = 30.0 * (1.0 - step as f32 / 400.0) + 0.5;
         let mut d = vec![Vec2::ZERO; n];
         for i in 0..n {
             for j in (i + 1)..n {
+                if !linked[i] || !linked[j] {
+                    continue;
+                }
                 let mut v = p[i] - p[j];
                 if v.length() < 1.0 {
                     v = Vec2::new((i as f32).sin() + 0.5, (j as f32).cos() + 0.5);
@@ -1521,12 +1529,34 @@ fn force_layout(c: &mut Case) {
             d[j] += f;
         }
         for i in 0..n {
+            // Nodes without links are only pushed away by the others; pull them back harder
+            // so they stay near the group instead of flying off-screen.
+            if !linked[i] {
+                continue; // placed in a row afterwards
+            }
             d[i] -= p[i] * 0.02;
             let len = d[i].length();
             if len > 0.0 {
                 p[i] += d[i] / len * len.min(t);
             }
         }
+    }
+    // Nodes without links: a tidy row under the group.
+    let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    for i in (0..n).filter(|&i| linked[i]) {
+        lo = lo.min(p[i]);
+        hi = hi.max(p[i]);
+    }
+    if lo.x > hi.x {
+        (lo, hi) = (Vec2::ZERO, Vec2::ZERO);
+    }
+    let lonely: Vec<usize> = (0..n).filter(|&i| !linked[i]).collect();
+    let per_row = 4usize;
+    for (k2, &i) in lonely.iter().enumerate() {
+        let (row, col) = (k2 / per_row, k2 % per_row);
+        let in_row = (lonely.len() - row * per_row).min(per_row) as f32;
+        let x = (lo.x + hi.x) / 2.0 + (col as f32 - (in_row - 1.0) / 2.0) * 190.0;
+        p[i] = Vec2::new(x / 1.3, (hi.y + 160.0 + row as f32 * 90.0) / 0.85);
     }
     // Wider than tall, to suit the window.
     for (nm, v) in names.iter().zip(p) {
@@ -1542,15 +1572,28 @@ impl Inv {
         use crate::autosearch::{Add, Finding};
         let c = self.case.as_ref().unwrap();
         let i = c.find(entity).unwrap();
-        let f = |check, text: &str, url: &str| Finding { check, text: text.into(), add: Some(Add::Source { url: url.into(), note: String::new() }) };
+        let f = |check: &'static str, text: &str, url: &str| Finding { check, text: text.into(), add: Some(Add::Profile { site: check.into(), url: url.into() }) };
         let list = vec![
-            (f("GitHub", "Найден профиль: https://github.com/dark_fox", "https://github.com/dark_fox"), true),
+            (f("GitHub", "Найден профиль: https://github.com/dark_fox", "https://github.com/dark_fox"), false),
             (f("Telegram", "Найден профиль: https://t.me/dark_fox", "https://t.me/dark_fox"), false),
             (f("Reddit", "Найден профиль: https://www.reddit.com/user/dark_fox", "https://www.reddit.com/user/dark_fox"), false),
             (f("Хабр", "Найден профиль: https://habr.com/ru/users/dark_fox/", "https://habr.com/ru/users/dark_fox/"), false),
         ];
         self.auto.insert((c.dir.clone(), entity.into()), (true, list));
         self.view = View::Entity(i);
+    }
+
+    #[cfg(test)]
+    pub fn fake_auto_added(&mut self, entity: &str) {
+        self.fake_auto(entity);
+        let c = self.case.as_ref().unwrap();
+        let (i, key) = (c.find(entity).unwrap(), (c.dir.clone(), entity.to_string()));
+        if c.pos.is_empty() {
+            let c = self.case.as_mut().unwrap();
+            force_layout(c);
+        }
+        self.apply_auto(i, &key, &[0, 1, 2, 3]);
+        self.view = View::Graph;
     }
 
     #[cfg(test)]
@@ -2001,18 +2044,54 @@ impl Inv {
                     Some(_) => {}
                     None => e.fields.push((key, value)),
                 },
-                Add::Entity { kind, name, relation } => new_entities.push((kind, name, relation)),
+                Add::Entity { kind, name, relation } => new_entities.push((kind, name, relation, None)),
+                Add::Profile { site, url } => {
+                    let name = crate::autosearch::profile_name(&site, &url);
+                    new_entities.push((Kind::Nick, name, format!("профиль на {site}"), Some((site, url))));
+                }
             }
         }
         c.touch(Some(i));
         let from = c.entities[i].name.clone();
-        for (kind, name, relation) in new_entities {
+        // New nodes go on a ring around the card they came from, so they show up next to it on the graph.
+        let origin = c.pos.get(&from).copied().unwrap_or([0.0, 0.0]);
+        let total = new_entities.len().max(1);
+        let ring = 170.0 + 6.0 * total as f32;
+        let start = c.pos.len() as f32 * 0.7;
+        for (n, (kind, name, relation, profile)) in new_entities.into_iter().enumerate() {
             if c.find(&name).is_none() {
                 let j = c.add_entity(kind);
                 if let Err(e) = c.rename_entity(j, &name) {
                     self.error = Some(e);
                     continue;
                 }
+                let j = c.find(&name).unwrap();
+                if let Some((site, url)) = &profile {
+                    let e = &mut c.entities[j];
+                    e.fields = vec![("Платформа".into(), site.clone()), ("Профиль".into(), url.clone())];
+                    e.sources.push(Source { url: url.clone(), date: inv::today(), reliability: Reliability::Likely, note: "найдено автопроверкой".into() });
+                    c.touch(Some(j));
+                }
+                // Try spots around the source and take the one farthest from every other node.
+                let _ = (start, n, total);
+                let mut best = (f32::MIN, [origin[0] + ring, origin[1]]);
+                for r in [ring, ring * 1.5, ring * 2.0] {
+                    for k in 0..24 {
+                        let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                        let p = [origin[0] + r * 1.3 * a.cos(), origin[1] + r * 0.8 * a.sin()];
+                        let clear = c.pos.values().map(|q| ((p[0] - q[0]) / 1.8).hypot(p[1] - q[1])).fold(f32::MAX, f32::min);
+                        let score = clear.min(150.0) - r * 0.05;
+                        if score > best.0 {
+                            best = (score, p);
+                        }
+                    }
+                    if best.0 >= 140.0 {
+                        break;
+                    }
+                }
+                c.pos.insert(name.clone(), best.1);
+                c.touch_pos();
+                self.fit_next = true;
             }
             if let Some(src) = c.find(&from) {
                 if !c.entities[src].links.iter().any(|l| l.target == name) {

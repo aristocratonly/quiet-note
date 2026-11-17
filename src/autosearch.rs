@@ -15,6 +15,19 @@ pub enum Add {
     Field { key: String, value: String },
     /// Something new: becomes a linked entity.
     Entity { kind: Kind, name: String, relation: String },
+    /// An account on a site: becomes a linked nickname node with the link as its source.
+    Profile { site: String, url: String },
+}
+
+/// Node name for a found account: "handle (Site)".
+pub fn profile_name(site: &str, url: &str) -> String {
+    let u = url.trim_end_matches('/');
+    let h = match u.split_once("?id=") {
+        Some((_, id)) => id,
+        None => u.rsplit('/').next().unwrap_or(u).split(['?', '#']).next().unwrap_or(u),
+    };
+    let h = h.trim_start_matches('@').trim_start_matches('~');
+    format!("{} ({site})", if h.is_empty() { url } else { h })
 }
 
 #[derive(Clone, Debug)]
@@ -161,7 +174,7 @@ fn check_site(s: &Site, nick: &str) -> Option<Finding> {
     found.then(|| Finding {
         check: s.name,
         text: format!("Найден профиль: {profile}"),
-        add: Some(Add::Source { url: profile, note: format!("профиль на {} (автопроверка)", s.name) }),
+        add: Some(Add::Profile { site: s.name.into(), url: profile }),
     })
 }
 
@@ -176,7 +189,7 @@ fn gravatar(email: &str) -> Vec<Finding> {
     let mut out = vec![Finding {
         check: "Gravatar",
         text: format!("Есть профиль Gravatar: {}", e["profileUrl"].as_str().unwrap_or("")),
-        add: e["profileUrl"].as_str().map(|u| Add::Source { url: u.into(), note: "профиль Gravatar (автопроверка)".into() }),
+        add: e["profileUrl"].as_str().map(|u| Add::Profile { site: "Gravatar".into(), url: u.into() }),
     }];
     if let Some(n) = e["displayName"].as_str().filter(|s| !s.is_empty()) {
         out.push(Finding { check: "Gravatar", text: format!("Имя в профиле: {n}"), add: Some(Add::Entity { kind: Kind::Person, name: n.into(), relation: "имя в Gravatar".into() }) });
@@ -189,7 +202,7 @@ fn gravatar(email: &str) -> Vec<Finding> {
     }
     for a in e["accounts"].as_array().into_iter().flatten() {
         if let Some(u) = a["url"].as_str() {
-            out.push(Finding { check: "Gravatar", text: format!("Привязан аккаунт: {u}"), add: Some(Add::Source { url: u.into(), note: "аккаунт из Gravatar (автопроверка)".into() }) });
+            out.push(Finding { check: "Gravatar", text: format!("Привязан аккаунт: {u}"), add: Some(Add::Profile { site: site_of(u), url: u.into() }) });
         }
     }
     out
@@ -206,6 +219,11 @@ fn mail_domain(dom: &str) -> Vec<Finding> {
         out.push(Finding { check: "Почтовый домен", text: format!("Личный или корпоративный домен: {dom}"), add: Some(Add::Entity { kind: Kind::Domain, name: dom.into(), relation: "домен почты".into() }) });
     }
     out
+}
+
+/// "https://www.linkedin.com/in/x" → "linkedin.com".
+fn site_of(url: &str) -> String {
+    url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or(url).trim_start_matches("www.").to_string()
 }
 
 // ------------------------------------------------------------------ domains
@@ -369,6 +387,14 @@ fn ip_info(ip: &str) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_names() {
+        assert_eq!(profile_name("GitHub", "https://github.com/dark_fox"), "dark_fox (GitHub)");
+        assert_eq!(profile_name("Хабр", "https://habr.com/ru/users/fox/"), "fox (Хабр)");
+        assert_eq!(profile_name("Lichess", "https://lichess.org/@/fox"), "fox (Lichess)");
+        assert_eq!(profile_name("Hacker News", "https://news.ycombinator.com/user?id=fox"), "fox (Hacker News)");
+    }
 
     #[test]
     fn phone_parsing() {
