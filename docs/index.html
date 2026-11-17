@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiet Note</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400&family=Manrope:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --void:#000;
+  --ash:#14181b;
+  --steel:#7f8d96;
+  --frost:#b9c7d0;
+  --ice:#e9f0f4;
+  --wound:#8c2a2e;
+  --serif:"Cormorant Garamond",Georgia,serif;
+  --sans:"Manrope",system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--void);color:var(--frost);scroll-behavior:smooth}
+body{background:var(--void);font-family:var(--sans);font-weight:300;font-size:17px;line-height:1.6;overflow-x:hidden}
+::selection{background:var(--wound);color:var(--ice)}
+a{color:inherit}
+:focus-visible{outline:1px solid var(--ice);outline-offset:4px}
+
+/* ---------- loader ---------- */
+#boot{position:fixed;inset:0;background:#000;z-index:50;display:grid;place-items:center;transition:opacity .9s ease}
+#boot.gone{opacity:0;pointer-events:none}
+#hello{font-family:var(--serif);font-weight:300;font-size:clamp(44px,9vw,120px);color:var(--ice);letter-spacing:.01em;min-height:1.2em;text-align:center}
+#hello.glitch{animation:flick .14s steps(2) 1}
+@keyframes flick{0%{opacity:.2;transform:translateX(-3px);filter:blur(1px)}100%{opacity:1;transform:none}}
+#boot small{position:absolute;bottom:32px;left:0;right:0;text-align:center;font-size:13px;color:var(--steel)}
+
+/* ---------- hero ---------- */
+.hero{position:relative;height:100svh;min-height:560px;overflow:hidden;cursor:none}
+#board{position:absolute;inset:0;width:100%;height:100%}
+.hero-text{position:absolute;left:clamp(16px,6vw,96px);bottom:clamp(40px,10vh,120px);max-width:760px;pointer-events:none}
+.hero h1{font-family:var(--serif);font-weight:300;font-size:clamp(52px,9vw,140px);line-height:.92;color:var(--ice);letter-spacing:-.015em}
+.hero p{margin-top:28px;max-width:30em;color:var(--frost)}
+.hint{position:absolute;right:clamp(16px,6vw,96px);top:32px;font-size:13px;color:var(--steel)}
+.brand{position:absolute;left:clamp(16px,6vw,96px);top:28px;font-family:var(--serif);font-size:24px;color:var(--ice)}
+
+/* ---------- body ---------- */
+main{padding:0 clamp(16px,6vw,96px)}
+section{max-width:1180px;margin:0 auto;padding:clamp(96px,16vh,180px) 0;border-top:1px solid var(--ash)}
+h2{font-family:var(--serif);font-weight:300;font-size:clamp(38px,5.4vw,72px);line-height:1;color:var(--ice);max-width:14em}
+.lede{margin-top:28px;max-width:34em;font-size:19px}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:clamp(40px,8vw,120px);margin-top:72px}
+.split h3{font-family:var(--sans);font-weight:500;font-size:17px;color:var(--ice);margin-bottom:8px}
+.split p{color:var(--frost);max-width:30em}
+.split > div{padding-left:20px;border-left:1px solid var(--ash)}
+
+/* dossier: entity file excerpt */
+.dossier{margin-top:72px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:clamp(32px,6vw,96px);align-items:start}
+.file{background:var(--ash);padding:28px 30px;font-size:15px;line-height:1.75;color:var(--frost);white-space:pre-wrap;font-family:var(--sans)}
+.file b{font-weight:500;color:var(--ice)}
+.file .k{color:var(--steel)}
+.file .r{color:#c65a5f}
+.kinds{list-style:none;display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:28px;font-family:var(--serif);font-size:26px;color:var(--ice)}
+.kinds li{opacity:.85}
+.steps{list-style:none;margin-top:40px;counter-reset:s}
+.steps li{counter-increment:s;padding:18px 0;border-top:1px solid var(--ash);display:grid;grid-template-columns:44px 1fr}
+.steps li::before{content:counter(s);font-family:var(--serif);font-size:24px;color:var(--steel);line-height:1.1}
+
+.quiet{font-family:var(--serif);font-weight:300;font-size:clamp(30px,3.8vw,50px);line-height:1.15;color:var(--ice);max-width:18em}
+.quiet span{display:block;color:var(--steel)}
+
+.get{display:flex;flex-wrap:wrap;gap:20px 40px;align-items:center;margin-top:56px}
+.btn{display:inline-block;padding:16px 30px;border:1px solid var(--frost);color:var(--ice);text-decoration:none;font-weight:400;transition:background .25s,color .25s}
+.btn:hover{background:var(--ice);color:#000}
+.note{font-size:14px;color:var(--steel);max-width:34em}
+footer{padding:48px clamp(16px,6vw,96px);font-size:13px;color:var(--steel);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+@media (max-width:760px){
+  .split,.dossier{grid-template-columns:1fr}
+  .hint{display:none}
+  .hero{cursor:auto}
+}
+@media (prefers-reduced-motion:reduce){
+  #hello.glitch{animation:none}
+}
+</style>
+</head>
+<body>
+
+<div id="boot" aria-hidden="true">
+  <div id="hello">hello</div>
+  <small>Quiet Note</small>
+</div>
+
+<header class="hero" id="hero">
+  <canvas id="board" aria-hidden="true"></canvas>
+  <div class="brand">Quiet Note</div>
+  <div class="hint">Посветите курсором</div>
+  <div class="hero-text">
+    <h1>Всё связано.<br>Даже то, что скрыто.</h1>
+    <p>Заметки и расследования, которые живут только на вашем компьютере. Обычные файлы, никакого облака, никаких свидетелей.</p>
+  </div>
+</header>
+
+<main>
+  <section id="notes">
+    <h2>Тихое место для мыслей</h2>
+    <p class="lede">Каждая заметка — это обычный файл <b style="font-weight:500;color:var(--ice)">.md</b> в папке Quiet Notes. Его можно открыть чем угодно, скопировать на флешку, удалить без следа.</p>
+    <div class="split">
+      <div><h3>Дерево папок</h3><p>Слева папки, справа текст. Перетаскивайте заметки мышью: на папку — внутрь, вниз — в корень.</p></div>
+      <div><h3>Колонка текста</h3><p>Текст стоит узкой колонкой по центру. Шрифт с засечками, без них или моноширинный — как удобнее думать.</p></div>
+      <div><h3>Сохраняется само</h3><p>Ничего не нужно нажимать. Внизу — счётчик слов и тихая отметка, что всё записано.</p></div>
+      <div><h3>Поиск по всему</h3><p>Строка вверху панели ищет по названиям и тексту всех заметок сразу.</p></div>
+    </div>
+  </section>
+
+  <section id="cases">
+    <h2>Расследования</h2>
+    <p class="lede">Отдельный раздел для OSINT-работы. Каждое дело — папка: люди, никнеймы, адреса и домены как карточки, а между ними — нити.</p>
+    <ul class="kinds">
+      <li>человек</li><li>никнейм</li><li>почта</li><li>телефон</li><li>домен</li><li>организация</li><li>место</li>
+    </ul>
+    <div class="dossier">
+      <div class="file" aria-label="Пример карточки сущности"><b>entities/ghost_17.md</b>
+
+<span class="k">type:</span>   никнейм
+<span class="k">field:</span>  первое появление = 2019, форум
+<span class="k">link:</span>   [[mail: g17@proton]]
+<span class="k">link:</span>   [[домен: nightledger.io]]
+<span class="k">source:</span> архив страницы, 03.02.2024 · <span class="r">надёжность низкая</span>
+<span class="k">event:</span>  2024-02-03 аккаунт удалён
+
+Тот же стиль подписи, что у владельца домена.
+Проверить часовой пояс постов.</div>
+      <div>
+        <p>Каждой связи — источник. Каждому источнику — дата и оценка надёжности. Доказательства лежат рядом, в папке дела.</p>
+        <ol class="steps">
+          <li>Заведите дело и добавьте первую сущность.</li>
+          <li>Прикрепите источники: ссылку, скриншот, файл.</li>
+          <li>Тяните нити на графе: Shift и перетаскивание от узла к узлу.</li>
+          <li>Смотрите хронологию — события по датам выстраиваются сами.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="local">
+    <p class="quiet">Мы не видим ваши заметки.<span>Потому что их у нас нет. Нет сервера, аккаунта и синхронизации. Только папка на вашем диске.</span></p>
+  </section>
+
+  <section id="get">
+    <h2>Скачать для macOS</h2>
+    <div class="get">
+      <a class="btn" href="https://github.com/aristocratonly/quiet-note/releases/latest/download/Quiet-Note-macOS.zip">Скачать Quiet Note</a>
+      <p class="note">Apple Silicon. Приложение не подписано: при первом запуске нажмите на нём правой кнопкой в «Программах» и выберите «Открыть».</p>
+    </div>
+  </section>
+</main>
+
+<footer><a href="https://github.com/aristocratonly/quiet-note">Исходный код на GitHub</a><span>Ваши файлы остаются вашими.</span></footer>
+
+<script>
+/* ---------- loader ---------- */
+(function(){
+  const words=["hello","привет","hola","bonjour","こんにちは","hallo","ciao","你好","안녕하세요","olá","merhaba","שלום","مرحبا","γεια","hej","नमस्ते","hello"];
+  const el=document.getElementById('hello'), boot=document.getElementById('boot');
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let i=0;
+  if(reduce){setTimeout(()=>boot.classList.add('gone'),900);return}
+  function next(){
+    i++;
+    if(i>=words.length){setTimeout(()=>boot.classList.add('gone'),500);return}
+    el.textContent=words[i];
+    el.classList.remove('glitch');void el.offsetWidth;el.classList.add('glitch');
+    const t=i<3?420:i>words.length-3?380:150;
+    setTimeout(next,t);
+  }
+  setTimeout(next,700);
+})();
+
+/* ---------- investigation board under a flashlight ---------- */
+(function(){
+  const c=document.getElementById('board'),x=c.getContext('2d'),hero=document.getElementById('hero');
+  const labels=["ghost_17","g17@proton","nightledger.io","+7 9•• •••-41","А. Ветров","Таллин","ООО «Северный ключ»","@vetrov_a","старый форум","IP 185.••.••.7","фото 2019","kassandra","сервер в Рейкьявике","аккаунт удалён","общий пароль","2023-11-02"];
+  let W,H,dpr,nodes=[],edges=[];
+  const m={x:-999,y:-999,tx:-999,ty:-999};
+  function rand(a,b){return a+Math.random()*(b-a)}
+  function build(){
+    dpr=Math.min(devicePixelRatio||1,2);W=c.clientWidth;H=c.clientHeight;
+    c.width=W*dpr;c.height=H*dpr;x.setTransform(dpr,0,0,dpr,0,0);
+    const n=W<700?11:labels.length;
+    nodes=labels.slice(0,n).map((l,k)=>({l,x:rand(.08,.92)*W,y:rand(.08,.62)*H,vx:rand(-.06,.06),vy:rand(-.05,.05),hot:k===0||k===4}));
+    edges=[];
+    nodes.forEach((a,k)=>{const d=nodes.map((b,j)=>[Math.hypot(a.x-b.x,a.y-b.y),j]).sort((p,q)=>p[0]-q[0]);
+      for(let s=1;s<=2;s++)edges.push([k,d[s][1],Math.random()<.18]);});
+    if(W<700){m.tx=W*.6;m.ty=H*.3}
+  }
+  addEventListener('resize',build);
+  hero.addEventListener('pointermove',e=>{const r=c.getBoundingClientRect();m.tx=e.clientX-r.left;m.ty=e.clientY-r.top});
+  hero.addEventListener('pointerleave',()=>{m.tx=W*.62;m.ty=H*.32});
+  const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function frame(t){
+    m.x+=(m.tx-m.x)*.12;m.y+=(m.ty-m.y)*.12;
+    x.clearRect(0,0,W,H);
+    const R=Math.max(170,Math.min(W,H)*.28);
+    if(!reduce)nodes.forEach(p=>{p.x+=p.vx;p.y+=p.vy;if(p.x<20||p.x>W-20)p.vx*=-1;if(p.y<20||p.y>H*.7)p.vy*=-1});
+    const vis=(px,py)=>{const d=Math.hypot(px-m.x,py-m.y);return Math.max(0,1-d/R)};
+    // faint residue everywhere
+    edges.forEach(([a,b,red])=>{const A=nodes[a],B=nodes[b];
+      const v=Math.max(vis(A.x,A.y),vis(B.x,B.y),vis((A.x+B.x)/2,(A.y+B.y)/2));
+      x.strokeStyle=red?`rgba(170,50,56,${.04+v*.75})`:`rgba(185,199,208,${.025+v*.5})`;
+      x.lineWidth=red?1.2:.8;x.setLineDash(red?[]:[3,5]);
+      x.beginPath();x.moveTo(A.x,A.y);x.lineTo(B.x,B.y);x.stroke();});
+    x.setLineDash([]);
+    x.font='300 14px Manrope, sans-serif';
+    nodes.forEach(p=>{const v=vis(p.x,p.y);
+      x.fillStyle=p.hot?`rgba(200,80,86,${.15+v*.85})`:`rgba(233,240,244,${.08+v*.9})`;
+      x.beginPath();x.arc(p.x,p.y,p.hot?3.4:2.4,0,7);x.fill();
+      if(v>.04){x.fillStyle=`rgba(233,240,244,${v})`;x.fillText(p.l,p.x+10,p.y+5)}});
+    // cold light
+    const g=x.createRadialGradient(m.x,m.y,0,m.x,m.y,R);
+    g.addColorStop(0,'rgba(170,200,220,.07)');g.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=g;x.fillRect(0,0,W,H);
+    x.strokeStyle='rgba(233,240,244,.35)';x.lineWidth=1;
+    x.beginPath();x.arc(m.x,m.y,5,0,7);x.stroke();
+    requestAnimationFrame(frame);
+  }
+  build();m.x=m.tx=W*.62;m.y=m.ty=H*.32;requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
