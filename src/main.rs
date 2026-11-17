@@ -150,10 +150,29 @@ impl App {
 
     fn flush(&mut self) {
         if self.dirty {
-            if let Some(p) = &self.open {
-                match std::fs::write(p, &self.text) {
+            if let Some(p) = self.open.clone() {
+                // The path must be a note file. If something turned it into a folder (or it vanished
+                // together with its folder), keep the text: save it as a new note instead of failing.
+                let target = if p.is_dir() || !p.parent().is_some_and(|d| d.is_dir()) {
+                    let dir = if p.is_dir() { p.clone() } else { self.s.root.clone() };
+                    match fsops::new_note(&dir) {
+                        Ok(np) => {
+                            self.error = Some(format!("Файл заметки пропал, текст сохранён в «{}»", fsops::display_name(&np)));
+                            self.open = Some(np.clone());
+                            self.s.last_open = Some(np.clone());
+                            np
+                        }
+                        Err(e) => {
+                            self.error = Some(e);
+                            return;
+                        }
+                    }
+                } else {
+                    p
+                };
+                match std::fs::write(&target, &self.text) {
                     Ok(_) => self.dirty = false,
-                    Err(e) => self.error = Some(format!("Не удалось сохранить: {e}")),
+                    Err(e) => self.error = Some(format!("Не удалось сохранить «{}»: {e}", target.display())),
                 }
             }
         }
@@ -161,6 +180,9 @@ impl App {
 
     fn open_note(&mut self, p: PathBuf) {
         self.flush();
+        if !p.is_file() {
+            return;
+        }
         match std::fs::read_to_string(&p) {
             Ok(t) => {
                 self.text = t;
