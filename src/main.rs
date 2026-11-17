@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autosearch;
 mod extract;
 mod fsops;
 mod inv_ui;

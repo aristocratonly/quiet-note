@@ -144,6 +144,7 @@ fn shots() {
     shoot("9-quick", mk(Mode::Notes), |a| a.quick = Some(crate::Quick { query: "и".into(), sel: 0, focus: false }));
     shoot("10-focus", mk(Mode::Notes), |a| a.focus_mode = true);
     shoot("11-map", mk(Mode::Investigations), |a| a.inv.view = inv_ui::View::Map);
+    shoot("14-auto", mk(Mode::Investigations), |a| a.inv.fake_auto("@dark_fox"));
     shoot("13-password", mk(Mode::Investigations), |a| a.inv.open_encrypt());
     shoot("12-extract", mk(Mode::Investigations), |a| a.inv.open_extract("Пишите на fox.mail@example.org или +7 (900) 123-45-67, сайт https://secure-login.example/x, @dark_fox, сервер 185.22.10.7"));
 }

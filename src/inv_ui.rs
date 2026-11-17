@@ -59,6 +59,8 @@ pub struct Inv {
     jobs_tx: std::sync::mpsc::Sender<Job>,
     jobs_rx: std::sync::mpsc::Receiver<Job>,
     busy: usize,
+    /// Automatic checks per (case, entity): running flag and findings with "added" marks.
+    auto: std::collections::HashMap<(PathBuf, String), (bool, Vec<(crate::autosearch::Finding, bool)>)>,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -86,6 +88,7 @@ struct ExtractBox {
 enum Job {
     Archived { case: PathBuf, entity: String, url: String, result: Result<(String, Vec<u8>), String> },
     Geocoded { case: PathBuf, entity: String, result: Result<(f64, f64), String> },
+    Auto { case: PathBuf, entity: String, finding: Option<crate::autosearch::Finding> },
 }
 
 /// A sidebar row: icon + text, hover/selected background.
@@ -213,6 +216,7 @@ impl Inv {
             jobs_tx,
             jobs_rx,
             busy: 0,
+            auto: Default::default(),
         }
     }
 
@@ -266,8 +270,13 @@ impl Inv {
 
     pub fn tick(&mut self, ctx: &egui::Context) {
         while let Ok(job) = self.jobs_rx.try_recv() {
-            self.busy = self.busy.saturating_sub(1);
+            if !matches!(job, Job::Auto { .. }) {
+                self.busy = self.busy.saturating_sub(1);
+            }
             self.apply_job(job);
+        }
+        if self.auto.values().any(|a| a.0) {
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
         if self.case.as_ref().is_some_and(|c| c.is_dirty()) {
             let since = self.last_edit.elapsed();
@@ -577,6 +586,10 @@ impl Inv {
                         ui.set_min_width(220.0);
                         if ui.button(format!("{}  Найти сущности в тексте…", ic::MAGIC_WAND)).clicked() {
                             self.extract = Some(ExtractBox { text: String::new(), found: vec![] });
+                            ui.close();
+                        }
+                        if ui.button(format!("{}  Проверить всё дело автоматически", ic::LIGHTNING)).on_hover_text("Никнеймы, почты, домены, телефоны и IP проверятся по открытым источникам").clicked() {
+                            self.auto_case();
                             ui.close();
                         }
                         ui.separator();
@@ -893,6 +906,49 @@ impl Inv {
                 }
             });
         }
+        let mut auto_start = false;
+        let mut auto_add: Vec<usize> = vec![];
+        let auto_key = (c.dir.clone(), e.name.clone());
+        if crate::autosearch::supported(e.kind, &probe) {
+            ui.add_space(10.0);
+            let state = self.auto.get(&auto_key);
+            let running = state.is_some_and(|s| s.0);
+            ui.horizontal(|ui| {
+                if running {
+                    ui.add(egui::Spinner::new().size(14.0).color(theme::ACCENT));
+                    ui.label(RichText::new("Идёт автопроверка…").size(12.5).color(theme::MUTED));
+                } else {
+                    let label = if state.is_some() { "Проверить ещё раз" } else { "Проверить автоматически" };
+                    auto_start = theme::pill(ui, ic::LIGHTNING, label)
+                        .on_hover_text(format!("{} будет проверен по открытым источникам. Запросы уходят напрямую с вашего компьютера.", probe))
+                        .clicked();
+                }
+                if let Some((_, f)) = state {
+                    let open = f.iter().filter(|(x, added)| x.add.is_some() && !added).count();
+                    ui.label(RichText::new(format!("находок: {}", f.len())).size(12.0).color(theme::FAINT));
+                    if open > 1 && ui.add(egui::Button::new(RichText::new(format!("Добавить всё ({open})")).size(12.0)).corner_radius(8)).clicked() {
+                        auto_add = f.iter().enumerate().filter(|(_, (x, a))| x.add.is_some() && !a).map(|(k, _)| k).collect();
+                    }
+                }
+            });
+            if let Some((run, f)) = state {
+                if f.is_empty() && !run {
+                    ui.label(RichText::new("Ничего не найдено").size(12.5).color(theme::FAINT));
+                }
+                ui.add_space(4.0);
+                for (k, (x, added)) in f.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([110.0, 22.0], egui::Label::new(RichText::new(x.check).size(11.5).color(theme::FAINT)).truncate());
+                        ui.label(RichText::new(&x.text).size(12.5).color(if *added { theme::FAINT } else { theme::TEXT }));
+                        if *added {
+                            ui.label(RichText::new(ic::CHECK).color(theme::GOOD));
+                        } else if x.add.is_some() && icon_button(ui, ic::PLUS, "Добавить в карточку").clicked() {
+                            auto_add.push(k);
+                        }
+                    });
+                }
+            }
+        }
         if e.kind == Kind::Place {
             let addr = e.fields.iter().find(|(k, v)| k.to_lowercase().contains("адрес") && !v.trim().is_empty()).map(|(_, v)| v.clone());
             let has = e.fields.iter().any(|(_, v)| crate::extract::coords(v).is_some());
@@ -1122,6 +1178,13 @@ impl Inv {
             std::thread::spawn(move || {
                 let _ = tx.send(Job::Geocoded { case, entity, result: crate::map::geocode(&a) });
             });
+        }
+        if auto_start {
+            let kind = self.case.as_ref().unwrap().entities[i].kind;
+            self.start_auto(case_dir.clone(), ent_name.clone(), kind, probe.clone());
+        }
+        if !auto_add.is_empty() {
+            self.apply_auto(i, &auto_key, &auto_add);
         }
         let c = self.case.as_mut().unwrap();
         if attach {
@@ -1475,6 +1538,22 @@ fn force_layout(c: &mut Case) {
 
 impl Inv {
     #[cfg(test)]
+    pub fn fake_auto(&mut self, entity: &str) {
+        use crate::autosearch::{Add, Finding};
+        let c = self.case.as_ref().unwrap();
+        let i = c.find(entity).unwrap();
+        let f = |check, text: &str, url: &str| Finding { check, text: text.into(), add: Some(Add::Source { url: url.into(), note: String::new() }) };
+        let list = vec![
+            (f("GitHub", "Найден профиль: https://github.com/dark_fox", "https://github.com/dark_fox"), true),
+            (f("Telegram", "Найден профиль: https://t.me/dark_fox", "https://t.me/dark_fox"), false),
+            (f("Reddit", "Найден профиль: https://www.reddit.com/user/dark_fox", "https://www.reddit.com/user/dark_fox"), false),
+            (f("Хабр", "Найден профиль: https://habr.com/ru/users/dark_fox/", "https://habr.com/ru/users/dark_fox/"), false),
+        ];
+        self.auto.insert((c.dir.clone(), entity.into()), (true, list));
+        self.view = View::Entity(i);
+    }
+
+    #[cfg(test)]
     pub fn open_encrypt(&mut self) {
         let dir = self.current_dir().unwrap();
         self.pw = Some(PwPrompt { dir, mode: PwMode::Encrypt, a: "секрет".into(), b: String::new(), err: None, focus: true });
@@ -1487,8 +1566,17 @@ impl Inv {
     }
 
     fn apply_job(&mut self, job: Job) {
+        if let Job::Auto { case, entity, finding } = job {
+            let e = self.auto.entry((case, entity)).or_default();
+            match finding {
+                Some(f) => e.1.push((f, false)),
+                None => e.0 = false,
+            }
+            return;
+        }
         let (case_dir, entity) = match &job {
             Job::Archived { case, entity, .. } | Job::Geocoded { case, entity, .. } => (case.clone(), entity.clone()),
+            Job::Auto { .. } => unreachable!(),
         };
         let Some(c) = self.case.as_mut().filter(|c| c.dir == case_dir) else { return };
         let Some(i) = c.find(&entity) else { return };
@@ -1519,6 +1607,7 @@ impl Inv {
                 }
                 Err(e) => self.error = Some(e),
             },
+            Job::Auto { .. } => {}
         }
         self.edited();
     }
@@ -1851,5 +1940,91 @@ impl Inv {
         if let Err(e) = res {
             self.error = Some(e);
         }
+    }
+}
+
+// --------------------------------------------------------------- autosearch
+
+impl Inv {
+    fn start_auto(&mut self, case: PathBuf, entity: String, kind: Kind, value: String) {
+        self.auto.insert((case.clone(), entity.clone()), (true, vec![]));
+        let tx = self.jobs_tx.clone();
+        std::thread::spawn(move || {
+            let (t, c, e) = (tx.clone(), case.clone(), entity.clone());
+            crate::autosearch::run(kind, &value, move |f| {
+                let _ = t.send(Job::Auto { case: c.clone(), entity: e.clone(), finding: Some(f) });
+            });
+            let _ = tx.send(Job::Auto { case, entity, finding: None });
+        });
+    }
+
+    /// Starts checks for every entity of the open case that has them.
+    fn auto_case(&mut self) {
+        let Some(c) = &self.case else { return };
+        let jobs: Vec<(PathBuf, String, Kind, String)> = c
+            .entities
+            .iter()
+            .map(|e| {
+                let v = e.fields.iter().find(|(_, v)| !v.trim().is_empty() && matches!(e.kind, Kind::Email | Kind::Phone | Kind::Domain)).map(|(_, v)| v.clone()).unwrap_or_else(|| e.name.clone());
+                (c.dir.clone(), e.name.clone(), e.kind, v)
+            })
+            .filter(|(_, _, k, v)| crate::autosearch::supported(*k, v))
+            .collect();
+        if jobs.is_empty() {
+            self.error = Some("В деле нет никнеймов, почт, доменов, телефонов или IP для проверки".into());
+        }
+        for (d, n, k, v) in jobs {
+            self.start_auto(d, n, k, v);
+        }
+    }
+
+    /// Puts chosen findings into the card: sources, fields or new linked entities.
+    fn apply_auto(&mut self, i: usize, key: &(PathBuf, String), picks: &[usize]) {
+        use crate::autosearch::Add;
+        let Some((_, findings)) = self.auto.get_mut(key) else { return };
+        let Some(c) = &mut self.case else { return };
+        let mut new_entities = vec![];
+        for &k in picks {
+            let Some((f, added)) = findings.get_mut(k) else { continue };
+            let Some(add) = f.add.clone() else { continue };
+            *added = true;
+            let e = &mut c.entities[i];
+            match add {
+                Add::Source { url, note } => {
+                    if !e.sources.iter().any(|s| s.url == url) {
+                        e.sources.push(Source { url, date: inv::today(), reliability: Reliability::Likely, note });
+                    }
+                }
+                Add::Field { key, value } => match e.fields.iter_mut().find(|(k, _)| *k == key) {
+                    Some(f) if f.1.trim().is_empty() => f.1 = value,
+                    Some(f) if f.1 != value => e.fields.push((key, value)),
+                    Some(_) => {}
+                    None => e.fields.push((key, value)),
+                },
+                Add::Entity { kind, name, relation } => new_entities.push((kind, name, relation)),
+            }
+        }
+        c.touch(Some(i));
+        let from = c.entities[i].name.clone();
+        for (kind, name, relation) in new_entities {
+            if c.find(&name).is_none() {
+                let j = c.add_entity(kind);
+                if let Err(e) = c.rename_entity(j, &name) {
+                    self.error = Some(e);
+                    continue;
+                }
+            }
+            if let Some(src) = c.find(&from) {
+                if !c.entities[src].links.iter().any(|l| l.target == name) {
+                    c.entities[src].links.push(Link { target: name, relation });
+                    c.touch(Some(src));
+                }
+            }
+        }
+        // Entity indexes may have shifted after sorting; keep the card that was open.
+        if let Some(j) = c.find(&from) {
+            self.view = View::Entity(j);
+        }
+        self.edited();
     }
 }
