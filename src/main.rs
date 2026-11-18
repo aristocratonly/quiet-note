@@ -9,6 +9,7 @@ mod map;
 mod theme;
 mod notes;
 mod pdf;
+mod select;
 mod vault;
 mod writer;
 
@@ -60,6 +61,8 @@ struct Settings {
     inv_root: PathBuf,
     last_case: Option<PathBuf>,
     smooth: bool,
+    /// Draw the app's own pointer instead of the system one.
+    own_cursor: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +80,7 @@ impl Default for Settings {
             inv_root: docs.join("Quiet Investigations"),
             last_case: None,
             smooth: true,
+            own_cursor: true,
         }
     }
 }
@@ -117,6 +121,18 @@ struct App {
     tags: (Instant, Vec<(String, usize)>),
     hits: Option<(String, HashSet<PathBuf>)>,
     history: Option<(Vec<(PathBuf, String)>, usize)>,
+    /// Notes and folders picked with Ctrl/⌘ or a drag frame.
+    pick: select::Picker<PathBuf>,
+    /// Where you have been, for the back arrow.
+    nav: Vec<Nav>,
+    nav_cur: Option<Nav>,
+}
+
+/// A place in the app the back arrow can return to.
+#[derive(Clone, PartialEq)]
+enum Nav {
+    Note(Option<PathBuf>),
+    Case(Option<PathBuf>, inv_ui::View),
 }
 
 /// The ⌘P switcher.
@@ -196,6 +212,9 @@ impl App {
             tags: (Instant::now() - Duration::from_secs(60), vec![]),
             hits: None,
             history: None,
+            pick: Default::default(),
+            nav: Vec::new(),
+            nav_cur: None,
         };
         if let Some(p) = app.s.last_open.clone() {
             if p.is_file() {
@@ -368,12 +387,21 @@ impl App {
             }
 
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), Sense::click_and_drag());
-            resp.dnd_set_drag_payload(entry.clone());
+            self.pick.row(entry.clone(), rect);
+            let multi = select::multi(ui);
+            if !multi && !self.pick.dragging() {
+                resp.dnd_set_drag_payload(entry.clone());
+            }
+            let picked = self.pick.is_picked(&entry);
 
             let drop_target = if is_dir { entry.clone() } else { dir.to_path_buf() };
             let hovering = resp.dnd_hover_payload::<PathBuf>().is_some();
             if let Some(src) = resp.dnd_release_payload::<PathBuf>() {
-                actions.push(Action::Move((*src).clone(), drop_target));
+                for p in self.drag_set(&src) {
+                    if !drop_target.starts_with(&p) {
+                        actions.push(Action::Move(p, drop_target.clone()));
+                    }
+                }
             }
 
             let row = rect.shrink2(egui::vec2(8.0, 1.0));
@@ -382,6 +410,8 @@ impl App {
             let t_sel = ui.ctx().animate_bool_with_time(resp.id.with("s"), selected, 0.22);
             if hovering && is_dir {
                 p.rect(row, 6.0, theme::DROP, Stroke::new(1.0, theme::ACCENT), egui::StrokeKind::Inside);
+            } else if picked {
+                select::paint_picked(ui, row);
             } else {
                 let base = theme::lerp(theme::SIDEBAR, theme::HOVER, t_hover);
                 let fill = theme::lerp(base, theme::SELECTED, t_sel);
@@ -416,14 +446,37 @@ impl App {
                 color,
             );
 
-            if resp.clicked() {
+            if resp.clicked() && multi {
+                self.pick.toggle(entry.clone());
+            } else if resp.clicked() {
+                self.pick.clear();
                 actions.push(if is_dir { Action::Toggle(entry.clone()) } else { Action::Open(entry.clone()) });
             }
-            if resp.double_clicked() {
+            if resp.double_clicked() && !multi {
                 actions.push(Action::StartRename(entry.clone()));
             }
             let parent_for_new = if is_dir { entry.clone() } else { dir.to_path_buf() };
+            let group = picked && self.pick.picked.len() > 1;
+            let group_set = if group { self.drag_set(&entry) } else { Vec::new() };
+            let mut clear_picks = false;
             resp.context_menu(|ui| {
+                if group {
+                    ui.set_min_width(190.0);
+                    ui.label(RichText::new(format!("Выбрано: {}", group_set.len())).size(12.0).color(theme::FAINT));
+                    ui.separator();
+                    if ui.button(format!("{}  Снять выделение", ic::X)).clicked() {
+                        clear_picks = true;
+                        ui.close();
+                    }
+                    if ui.button(RichText::new(format!("{}  Все в корзину", ic::TRASH)).color(theme::DANGER)).clicked() {
+                        for p in &group_set {
+                            actions.push(Action::Delete(p.clone()));
+                        }
+                        clear_picks = true;
+                        ui.close();
+                    }
+                    return;
+                }
                 ui.set_min_width(190.0);
                 if ui.button(format!("{}  Новая заметка", ic::NOTE_PENCIL)).clicked() {
                     actions.push(Action::NewNote(parent_for_new.clone()));
@@ -448,11 +501,30 @@ impl App {
                     ui.close();
                 }
             });
+            if clear_picks {
+                self.pick.clear();
+            }
 
             if is_dir && expanded {
                 self.tree(ui, &entry, depth + 1, actions);
             }
         }
+    }
+
+    /// What a drag or group action works on: every picked item if `src` is picked,
+    /// otherwise just `src`. Items inside a picked folder go along with it.
+    fn drag_set(&self, src: &Path) -> Vec<PathBuf> {
+        if !self.pick.is_picked(&src.to_path_buf()) {
+            return vec![src.to_path_buf()];
+        }
+        let all = &self.pick.picked;
+        let mut v: Vec<PathBuf> = all
+            .iter()
+            .filter(|p| p.exists() && !all.iter().any(|q| q != *p && p.starts_with(q)))
+            .cloned()
+            .collect();
+        v.sort();
+        v
     }
 
     /// Which notes and folders match the search: names, text, or `#tag`.
@@ -599,6 +671,8 @@ impl App {
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let root = self.s.root.clone();
+                    let area = ui.clip_rect();
+                    self.pick.begin();
                     self.tree(ui, &root, 0, actions);
 
                     // Empty space below the tree: drop here to move to the root, right-click to create.
@@ -608,7 +682,12 @@ impl App {
                         ui.painter().text(rect.center_top() + egui::vec2(0.0, 26.0), egui::Align2::CENTER_CENTER, "В корень", theme::font(12.0), theme::ACCENT);
                     }
                     if let Some(src) = resp.dnd_release_payload::<PathBuf>() {
-                        actions.push(Action::Move((*src).clone(), root.clone()));
+                        for p in self.drag_set(&src) {
+                            actions.push(Action::Move(p, root.clone()));
+                        }
+                    }
+                    if resp.clicked() && !select::multi(ui) {
+                        self.pick.clear();
                     }
                     resp.context_menu(|ui| {
                         if ui.button(format!("{}  Новая заметка", ic::NOTE_PENCIL)).clicked() {
@@ -620,6 +699,7 @@ impl App {
                             ui.close();
                         }
                     });
+                    self.pick.finish(ui, area);
                 });
             });
     }
@@ -655,6 +735,12 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.s.smooth, true, "Включена");
                         ui.selectable_value(&mut self.s.smooth, false, "Выключена");
+                    });
+                    ui.end_row();
+                    ui.label(RichText::new("Курсор").color(theme::MUTED));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.s.own_cursor, true, "Прицел");
+                        ui.selectable_value(&mut self.s.own_cursor, false, "Системный");
                     });
                     ui.end_row();
                 });
@@ -700,6 +786,15 @@ impl App {
             error_bar(ui, &e, &mut self.error);
         }
         let Some(path) = self.open.clone() else {
+            if !self.nav.is_empty() {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    if back_button(ui) {
+                        self.back();
+                    }
+                });
+            }
             empty_state(ui, ic::NOTE_PENCIL, "Пустой лист", &theme::keys("⌘N — новая заметка,  ⌘P — найти заметку"));
             return;
         };
@@ -711,6 +806,13 @@ impl App {
             if self.focus_mode {
                 ui.label(RichText::new("Esc — выйти из режима фокуса").size(11.5).color(theme::FAINT.gamma_multiply(0.7)));
                 return;
+            }
+            if !self.nav.is_empty() {
+                ui.add_space(-8.0);
+                if back_button(ui) {
+                    self.back();
+                }
+                ui.add_space(4.0);
             }
             let rel = path.strip_prefix(&self.s.root).unwrap_or(&path).with_extension("");
             let parts: Vec<String> = rel.iter().map(|c| c.to_string_lossy().into_owned()).collect();
@@ -1120,6 +1222,53 @@ impl App {
         }
     }
 
+    fn nav_now(&self) -> Nav {
+        match self.s.mode {
+            Mode::Notes => Nav::Note(self.open.clone()),
+            Mode::Investigations => Nav::Case(self.inv.current_dir(), self.inv.view),
+        }
+    }
+
+    /// Remember the previous place whenever you move somewhere new.
+    fn track_nav(&mut self) {
+        let now = self.nav_now();
+        if let Some(prev) = self.nav_cur.take() {
+            if prev != now {
+                self.nav.push(prev);
+                if self.nav.len() > 100 {
+                    self.nav.remove(0);
+                }
+            }
+        }
+        self.nav_cur = Some(now);
+    }
+
+    fn back(&mut self) {
+        let Some(to) = self.nav.pop() else { return };
+        self.flush();
+        self.inv.flush();
+        match &to {
+            Nav::Note(p) => {
+                self.s.mode = Mode::Notes;
+                match p {
+                    Some(p) if p.is_file() => self.open_note(p.clone()),
+                    Some(_) => return self.back(),
+                    None => {
+                        self.open = None;
+                        self.text.clear();
+                    }
+                }
+            }
+            Nav::Case(dir, view) => {
+                self.s.mode = Mode::Investigations;
+                if !self.inv.restore(dir.as_deref(), *view) {
+                    return self.back();
+                }
+            }
+        }
+        self.nav_cur = Some(self.nav_now());
+    }
+
     fn ui(&mut self, ctx: &egui::Context) {
         let mut actions = Vec::new();
         theme::motion(ctx, self.s.smooth);
@@ -1139,6 +1288,25 @@ impl App {
                 i.key_pressed(egui::Key::Escape),
             )
         });
+        let back = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::OpenBracket) || i.pointer.button_pressed(egui::PointerButton::Extra1)
+        });
+        if back {
+            self.back();
+        }
+        // Picked notes: Esc lets go, Delete sends them to the trash.
+        if self.s.mode == Mode::Notes && !self.pick.picked.is_empty() && ctx.memory(|m| m.focused().is_none()) {
+            let (esc, del) = ctx.input(|i| (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)));
+            if esc {
+                self.pick.clear();
+            } else if del {
+                let any = self.pick.picked.iter().next().cloned().unwrap();
+                for p in self.drag_set(&any) {
+                    actions.push(Action::Delete(p));
+                }
+                self.pick.clear();
+            }
+        }
         if quick {
             self.quick = if self.quick.is_some() { None } else { Some(Quick { query: String::new(), sel: 0, focus: false }) };
         }
@@ -1196,6 +1364,15 @@ impl App {
             self.apply(a);
         }
         self.inv.tick(ctx);
+        if self.inv.back_clicked {
+            self.inv.back_clicked = false;
+            self.back();
+        }
+        self.track_nav();
+        self.inv.can_back = !self.nav.is_empty();
+        if self.s.own_cursor {
+            draw_cursor(ctx);
+        }
 
         if self.dirty {
             let since = self.last_edit.elapsed();
@@ -1208,6 +1385,54 @@ impl App {
         // Pick up files changed outside the app now and then.
         ctx.request_repaint_after(Duration::from_secs(2));
     }
+}
+
+/// The arrow that returns to the previous place.
+pub fn back_button(ui: &mut egui::Ui) -> bool {
+    theme::icon_button(ui, ic::ARROW_LEFT, &theme::keys("Назад  ⌘[")).clicked()
+}
+
+/// The app's own pointer: a thin sight that tightens on press and
+/// changes shape over text and buttons. Resize arrows stay system ones.
+fn draw_cursor(ctx: &egui::Context) {
+    let icon = ctx.output(|o| o.cursor_icon);
+    let resize = !matches!(icon, egui::CursorIcon::Default | egui::CursorIcon::PointingHand | egui::CursorIcon::Text | egui::CursorIcon::Grab | egui::CursorIcon::Grabbing);
+    let Some(pos) = ctx.input(|i| i.pointer.latest_pos()).filter(|_| ctx.input(|i| i.pointer.has_pointer())) else { return };
+    if resize {
+        return;
+    }
+    ctx.set_cursor_icon(egui::CursorIcon::None);
+    let down = ctx.input(|i| i.pointer.any_down());
+    let hand = matches!(icon, egui::CursorIcon::PointingHand | egui::CursorIcon::Grab | egui::CursorIcon::Grabbing);
+    let t_hand = ctx.animate_bool_with_time(egui::Id::new("cursor_hand"), hand, 0.12);
+    let t_down = ctx.animate_bool_with_time(egui::Id::new("cursor_down"), down, 0.08);
+    let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("cursor")));
+    let ink = theme::lerp(theme::TEXT, theme::ACCENT, t_hand);
+    let line = Stroke::new(1.2, ink);
+    let shadow = Stroke::new(3.2, egui::Color32::from_black_alpha(140));
+
+    if icon == egui::CursorIcon::Text {
+        // A tall caret with serifs.
+        for s in [shadow, Stroke::new(1.2, theme::TEXT)] {
+            p.line_segment([pos - egui::vec2(0.0, 9.0), pos + egui::vec2(0.0, 9.0)], s);
+            p.line_segment([pos + egui::vec2(-3.5, -9.0), pos + egui::vec2(3.5, -9.0)], s);
+            p.line_segment([pos + egui::vec2(-3.5, 9.0), pos + egui::vec2(3.5, 9.0)], s);
+        }
+        return;
+    }
+    let r = 7.0 + 4.0 * t_hand - 3.0 * t_down;
+    let gap = r + 3.0;
+    let tick = 5.0 - 2.0 * t_down;
+    for s in [shadow, line] {
+        p.circle_stroke(pos, r, s);
+        for d in [egui::vec2(1.0, 0.0), egui::vec2(-1.0, 0.0), egui::vec2(0.0, 1.0), egui::vec2(0.0, -1.0)] {
+            p.line_segment([pos + d * gap, pos + d * (gap + tick)], s);
+        }
+    }
+    if t_hand > 0.0 {
+        p.circle_filled(pos, r, theme::tint(theme::ACCENT, 0.12 * t_hand));
+    }
+    p.circle_filled(pos, 1.6, if down { theme::DANGER } else { ink });
 }
 
 pub fn error_bar(ui: &mut egui::Ui, e: &str, slot: &mut Option<String>) {

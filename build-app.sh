@@ -3,6 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 cargo build --release
+VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 APP="dist/Quiet Note.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
@@ -15,7 +16,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>local.quietnote</string>
   <key>CFBundleExecutable</key><string>quiet-note</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.5.2</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

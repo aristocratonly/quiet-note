@@ -149,3 +149,63 @@ fn shots() {
     shoot("13-password", mk(Mode::Investigations), |a| a.inv.open_encrypt());
     shoot("12-extract", mk(Mode::Investigations), |a| a.inv.open_extract("Пишите на fox.mail@example.org или +7 (900) 123-45-67, сайт https://secure-login.example/x, @dark_fox, сервер 185.22.10.7"));
 }
+
+fn harness(settings: Settings) -> Harness<'static, State> {
+    let state = State { settings: Some(settings), app: None, setup: None };
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 760.0)).with_pixels_per_point(2.0).build_state(
+        |ctx, st: &mut State| {
+            if st.app.is_none() {
+                st.app = Some(App::with_settings(ctx, st.settings.take().unwrap()));
+                return;
+            }
+            st.app.as_mut().unwrap().ui(ctx);
+        },
+        state,
+    );
+    h.run_steps(10);
+    h
+}
+
+fn press(h: &mut Harness<'static, State>, pos: egui::Pos2, pressed: bool, m: egui::Modifiers) {
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: m });
+}
+
+/// Frame-picking, Ctrl-click and the back arrow, with a screenshot of the result.
+#[test]
+#[ignore]
+fn picking() {
+    let base = std::env::temp_dir().join("quiet-note-pick");
+    let s = sample(&base);
+    let mut h = harness(Settings { mode: Mode::Notes, ..s });
+    // Drag a frame from empty space at the bottom of the sidebar up over the tree.
+    let none = egui::Modifiers::NONE;
+    h.event(egui::Event::PointerMoved(egui::pos2(150.0, 640.0)));
+    h.run_steps(2);
+    press(&mut h, egui::pos2(150.0, 640.0), true, none);
+    h.run_steps(2);
+    for y in [600.0, 500.0, 400.0, 300.0, 240.0] {
+        h.event(egui::Event::PointerMoved(egui::pos2(150.0, y)));
+        h.run_steps(2);
+    }
+    let n_framed = h.state().app.as_ref().unwrap().pick.picked.len();
+    fs::create_dir_all("target/shots").unwrap();
+    h.render().unwrap().save("target/shots/16-picking.png").unwrap();
+    press(&mut h, egui::pos2(150.0, 240.0), false, none);
+    h.run_steps(3);
+    println!("framed: {n_framed}");
+    assert!(n_framed >= 3, "frame picked {n_framed}");
+
+    // Back arrow: open another note, then go back.
+    let app = h.state_mut().app.as_mut().unwrap();
+    let first = app.open.clone();
+    let other = app.s.root.join("Входящие.md");
+    app.open_note(other.clone());
+    h.run_steps(3);
+    assert_eq!(h.state().app.as_ref().unwrap().nav.len(), 1);
+    h.state_mut().app.as_mut().unwrap().back();
+    h.run_steps(3);
+    assert_eq!(h.state().app.as_ref().unwrap().open, first);
+    h.state_mut().app.as_mut().unwrap().open_note(other);
+    h.run_steps(5);
+    h.render().unwrap().save("target/shots/17-back.png").unwrap();
+}

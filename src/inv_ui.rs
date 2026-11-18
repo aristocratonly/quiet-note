@@ -9,6 +9,13 @@ use std::time::{Duration, Instant};
 
 const AUTOSAVE: Duration = Duration::from_millis(800);
 
+/// Something in the sidebar that can be picked: a whole case or an entity of the open one.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum Pick {
+    Case(PathBuf),
+    Entity(usize),
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum View {
     Overview,
@@ -61,6 +68,12 @@ pub struct Inv {
     busy: usize,
     /// Automatic checks per (case, entity): running flag and findings with "added" marks.
     auto: std::collections::HashMap<(PathBuf, String), (bool, Vec<(crate::autosearch::Finding, bool)>)>,
+    /// Cases and entities picked with Ctrl/⌘ or a drag frame.
+    pick: crate::select::Picker<Pick>,
+    /// Set by the app: there is somewhere to go back to.
+    pub can_back: bool,
+    /// Set here when the back arrow is pressed; the app handles it.
+    pub back_clicked: bool,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -93,9 +106,15 @@ enum Job {
 
 /// A sidebar row: icon + text, hover/selected background.
 fn row(ui: &mut egui::Ui, indent: f32, icon: &str, icon_col: Color32, text: &str, selected: bool) -> egui::Response {
+    row_ex(ui, indent, icon, icon_col, text, selected, false)
+}
+
+fn row_ex(ui: &mut egui::Ui, indent: f32, icon: &str, icon_col: Color32, text: &str, selected: bool, picked: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), Sense::click());
     let r = rect.shrink2(egui::vec2(8.0, 1.0));
-    if selected {
+    if picked {
+        crate::select::paint_picked(ui, r);
+    } else if selected {
         ui.painter().rect_filled(r, 6.0, theme::SELECTED);
     } else if resp.hovered() {
         ui.painter().rect_filled(r, 6.0, theme::HOVER);
@@ -233,6 +252,9 @@ impl Inv {
             jobs_rx,
             busy: 0,
             auto: Default::default(),
+            pick: Default::default(),
+            can_back: false,
+            back_clicked: false,
         }
     }
 
@@ -265,6 +287,7 @@ impl Inv {
     }
 
     fn show_case(&mut self, case: Case) {
+        self.pick.picked.retain(|p| matches!(p, Pick::Case(_)));
         self.case = Some(case);
         self.map = Default::default();
         self.view = View::Overview;
@@ -277,6 +300,31 @@ impl Inv {
 
     fn edited(&mut self) {
         self.last_edit = Instant::now();
+    }
+
+    /// Return to a case and view, for the back arrow. False if it no longer exists.
+    pub fn restore(&mut self, dir: Option<&Path>, view: View) -> bool {
+        match dir {
+            None => {
+                self.flush();
+                self.case = None;
+            }
+            Some(d) if !d.is_dir() => return false,
+            Some(d) => {
+                if self.current_dir().as_deref() != Some(d) {
+                    self.open_case(d);
+                    if self.case.is_none() {
+                        return true; // waiting for the password
+                    }
+                }
+                let ok = match view {
+                    View::Entity(i) => self.case.as_ref().is_some_and(|c| i < c.entities.len()),
+                    _ => true,
+                };
+                self.go(if ok { view } else { View::Overview });
+            }
+        }
+        true
     }
 
     fn go(&mut self, v: View) {
@@ -348,6 +396,8 @@ impl Inv {
 
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
+            let area = ui.clip_rect();
+            self.pick.begin();
             let cases = inv::list_cases(&self.root);
             if cases.is_empty() {
                 ui.add_space(10.0);
@@ -397,19 +447,31 @@ impl Inv {
                         (false, true) => (ic::LOCK_SIMPLE, theme::WARN),
                         (false, false) => (ic::FOLDER, theme::FAINT),
                     };
-                    let r = row(ui, 14.0, icon, col, &name, is_open && self.view != View::Graph && false);
-                    if r.clicked() {
+                    let key = Pick::Case(dir.clone());
+                    let r = row_ex(ui, 14.0, icon, col, &name, false, self.pick.is_picked(&key));
+                    self.pick.row(key.clone(), r.rect);
+                    let multi = crate::select::multi(ui);
+                    if r.clicked() && multi {
+                        self.pick.toggle(key);
+                    } else if r.clicked() {
+                        self.pick.clear();
                         if is_open {
                             self.go(View::Overview);
                         } else {
                             self.open_case(&dir);
                         }
                     }
-                    if r.double_clicked() {
+                    if r.double_clicked() && !multi {
                         self.case_rename = Some((dir.clone(), name.clone(), false));
                     }
+                    let group = self.pick.is_picked(&Pick::Case(dir.clone())) && self.pick.picked.len() > 1;
+                    let mut group_delete = false;
                     r.context_menu(|ui| {
                         ui.set_min_width(190.0);
+                        if group {
+                            group_delete = self.group_menu(ui);
+                            return;
+                        }
                         if ui.button(format!("{}  Переименовать", ic::PENCIL_SIMPLE)).clicked() {
                             self.case_rename = Some((dir.clone(), name.clone(), false));
                             ui.close();
@@ -447,12 +509,67 @@ impl Inv {
                             ui.close();
                         }
                     });
+                    if group_delete {
+                        self.delete_picked();
+                        return;
+                    }
                 }
                 if is_open {
                     self.case_children(ui);
                 }
             }
+            // Empty space below: click to let go of picks, drag to frame rows.
+            let (_, rest) = ui.allocate_exact_size(ui.available_size().max(egui::vec2(0.0, 60.0)), Sense::click());
+            if rest.clicked() && !crate::select::multi(ui) {
+                self.pick.clear();
+            }
+            self.pick.finish(ui, area);
         });
+        if !self.pick.picked.is_empty() && ui.ctx().memory(|m| m.focused().is_none()) {
+            let (esc, del) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)));
+            if esc {
+                self.pick.clear();
+            } else if del {
+                self.delete_picked();
+            }
+        }
+    }
+
+    /// Menu for several picked rows. Returns true when "move to trash" was chosen.
+    fn group_menu(&mut self, ui: &mut egui::Ui) -> bool {
+        let n = self.pick.picked.len();
+        ui.label(RichText::new(format!("Выбрано: {n}")).size(12.0).color(theme::FAINT));
+        ui.separator();
+        if ui.button(format!("{}  Снять выделение", ic::X)).clicked() {
+            self.pick.clear();
+            ui.close();
+        }
+        if ui.button(RichText::new(format!("{}  Все в корзину", ic::TRASH)).color(theme::DANGER)).clicked() {
+            ui.close();
+            return true;
+        }
+        false
+    }
+
+    /// Send every picked case and entity to the trash.
+    fn delete_picked(&mut self) {
+        let picks: Vec<Pick> = self.pick.picked.drain().collect();
+        let mut ents: Vec<usize> = picks.iter().filter_map(|p| if let Pick::Entity(i) = p { Some(*i) } else { None }).collect();
+        ents.sort_unstable_by(|a, b| b.cmp(a));
+        for i in ents {
+            self.delete_entity(i);
+        }
+        for p in picks {
+            if let Pick::Case(dir) = p {
+                if self.current_dir().as_ref() == Some(&dir) {
+                    self.flush();
+                    self.case = None;
+                }
+                if let Err(e) = trash::delete(&dir) {
+                    self.error = Some(format!("Не удалось удалить: {e}"));
+                }
+            }
+        }
     }
 
     fn rename_case(&mut self, dir: &Path, name: &str) {
@@ -510,19 +627,33 @@ impl Inv {
         }
         let mut delete = None;
         for (i, name, kind) in items {
-            let r = row(ui, 34.0, kind_icon(kind), kind.color(), &name, self.view == View::Entity(i));
-            if r.clicked() {
+            let key = Pick::Entity(i);
+            let r = row_ex(ui, 34.0, kind_icon(kind), kind.color(), &name, self.view == View::Entity(i), self.pick.is_picked(&key));
+            self.pick.row(key.clone(), r.rect);
+            if r.clicked() && crate::select::multi(ui) {
+                self.pick.toggle(key);
+            } else if r.clicked() {
+                self.pick.clear();
                 self.go(View::Entity(i));
             }
+            let group = self.pick.is_picked(&Pick::Entity(i)) && self.pick.picked.len() > 1;
             r.context_menu(|ui| {
+                if group {
+                    if self.group_menu(ui) {
+                        delete = Some(usize::MAX);
+                    }
+                    return;
+                }
                 if ui.button(RichText::new(format!("{}  В корзину", ic::TRASH)).color(theme::DANGER)).clicked() {
                     delete = Some(i);
                     ui.close();
                 }
             });
         }
-        if let Some(i) = delete {
-            self.delete_entity(i);
+        match delete {
+            Some(usize::MAX) => self.delete_picked(),
+            Some(i) => self.delete_entity(i),
+            None => {}
         }
         ui.add_space(10.0);
     }
@@ -551,6 +682,15 @@ impl Inv {
             crate::error_bar(ui, &e, &mut self.error);
         }
         if self.case.is_none() {
+            if self.can_back {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    if crate::back_button(ui) {
+                        self.back_clicked = true;
+                    }
+                });
+            }
             let n = inv::list_cases(&self.root).len();
             let hint = if n == 0 { "Нажмите ＋ слева, чтобы начать" } else { "Выберите расследование слева" };
             crate::empty_state(ui, ic::DETECTIVE, "Расследования", hint);
@@ -570,6 +710,13 @@ impl Inv {
         let name = self.case.as_ref().unwrap().name();
         egui::Frame::NONE.inner_margin(egui::Margin { left: 28, right: 20, top: 14, bottom: 10 }).show(ui, |ui| {
             ui.horizontal(|ui| {
+                if self.can_back {
+                    ui.add_space(-12.0);
+                    if crate::back_button(ui) {
+                        self.back_clicked = true;
+                    }
+                    ui.add_space(2.0);
+                }
                 ui.label(RichText::new(ic::DETECTIVE).size(17.0).color(theme::ACCENT));
                 ui.label(RichText::new(&name).size(15.5).color(theme::TEXT));
                 ui.add_space(18.0);
