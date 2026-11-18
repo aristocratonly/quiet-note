@@ -141,9 +141,18 @@ fn shots() {
     shoot("6-empty-notes", Settings { mode: Mode::Notes, last_open: None, ..mk(Mode::Notes) }, |_| {});
     shoot("7-settings", mk(Mode::Notes), |a| a.show_settings = true);
     shoot("8-reading", mk(Mode::Notes), |a| a.reading = true);
-    shoot("9-quick", mk(Mode::Notes), |a| a.quick = Some(crate::Quick { query: "и".into(), sel: 0, focus: false }));
+    shoot("9-quick", mk(Mode::Notes), |a| a.quick = Some(crate::palette::State { query: "и".into(), sel: 0, focus: false }));
     shoot("10-focus", mk(Mode::Notes), |a| a.focus_mode = true);
     shoot("11-map", mk(Mode::Investigations), |a| a.inv.view = inv_ui::View::Map);
+    shoot("18-palette", mk(Mode::Investigations), |a| a.quick = Some(crate::palette::State::default()));
+    shoot("19-timeline-scale", mk(Mode::Investigations), |a| {
+        a.inv.view = inv_ui::View::Timeline;
+        a.inv.tl_scale = true;
+    });
+    shoot("20-graph-find", mk(Mode::Investigations), |a| {
+        a.inv.view = inv_ui::View::Graph;
+        a.inv.graph_find = "fox".into();
+    });
     shoot("15-auto-graph", mk(Mode::Investigations), |a| a.inv.fake_auto_added("@dark_fox"));
     shoot("14-auto", mk(Mode::Investigations), |a| a.inv.fake_auto("@dark_fox"));
     shoot("13-password", mk(Mode::Investigations), |a| a.inv.open_encrypt());
@@ -208,4 +217,33 @@ fn picking() {
     h.state_mut().app.as_mut().unwrap().open_note(other);
     h.run_steps(5);
     h.render().unwrap().save("target/shots/17-back.png").unwrap();
+}
+
+/// ⌘K opens the palette; typing and Enter runs the top match.
+#[test]
+#[ignore]
+fn palette_runs() {
+    let base = std::env::temp_dir().join("quiet-note-palette");
+    let s = sample(&base);
+    let mut h = harness(Settings { mode: Mode::Notes, ..s });
+    h.event(egui::Event::Key { key: egui::Key::K, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    h.run_steps(3);
+    assert!(h.state().app.as_ref().unwrap().quick.is_some(), "palette did not open");
+    h.event(egui::Event::Text("Перейти в расследования".into()));
+    h.run_steps(3);
+    h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    let app = h.state().app.as_ref().unwrap();
+    assert!(app.quick.is_none(), "palette stayed open");
+    assert!(app.s.mode == Mode::Investigations, "command did not run");
+    assert_eq!(app.s.recent_cmds.first().map(String::as_str), Some("cmd:invs"));
+}
+
+#[test]
+fn dates_to_days() {
+    use crate::timescale::day_num;
+    assert_eq!(day_num("1970-01-01"), Some(0.0));
+    assert_eq!(day_num("2024-03-01").unwrap() - day_num("2024-02-01").unwrap(), 29.0);
+    assert_eq!(day_num("2023"), day_num("2023-01-01"));
+    assert_eq!(day_num("вчера"), None);
 }

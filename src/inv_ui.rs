@@ -74,6 +74,13 @@ pub struct Inv {
     pub can_back: bool,
     /// Set here when the back arrow is pressed; the app handles it.
     pub back_clicked: bool,
+    /// Timeline as a scale instead of a list.
+    pub(crate) tl_scale: bool,
+    scale: crate::timescale::Scale,
+    /// Kinds hidden on the timeline and the graph.
+    pub(crate) hidden: std::collections::HashSet<Kind>,
+    /// Graph: search text and the node to centre on.
+    pub(crate) graph_find: String,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -255,6 +262,10 @@ impl Inv {
             pick: Default::default(),
             can_back: false,
             back_clicked: false,
+            tl_scale: false,
+            scale: Default::default(),
+            hidden: Default::default(),
+            graph_find: String::new(),
         }
     }
 
@@ -277,7 +288,7 @@ impl Inv {
         self.view = View::Overview;
     }
 
-    fn open_case(&mut self, dir: &Path) {
+    pub fn open_case(&mut self, dir: &Path) {
         self.flush();
         if crate::vault::is_locked(dir) {
             self.pw = Some(PwPrompt { dir: dir.to_path_buf(), mode: PwMode::Unlock, a: String::new(), b: String::new(), err: None, focus: false });
@@ -296,6 +307,9 @@ impl Inv {
         self.zoom = 1.0;
         self.fit_next = true;
         self.filter.clear();
+        self.scale.refit();
+        self.hidden.clear();
+        self.graph_find.clear();
     }
 
     fn edited(&mut self) {
@@ -327,7 +341,7 @@ impl Inv {
         true
     }
 
-    fn go(&mut self, v: View) {
+    pub fn go(&mut self, v: View) {
         self.view = v;
         self.name_buf = None;
     }
@@ -360,7 +374,7 @@ impl Inv {
         }
     }
 
-    fn new_case(&mut self) {
+    pub fn new_case(&mut self) {
         match inv::create_case(&self.root) {
             Ok(dir) => {
                 self.open_case(&dir);
@@ -896,9 +910,41 @@ impl Inv {
             });
         });
         ui.label(RichText::new("Все события из карточек и общие события дела, по дате").size(12.5).color(theme::FAINT));
-        ui.add_space(22.0);
+        ui.add_space(14.0);
 
-        let items = c.timeline();
+        let all = c.timeline();
+        let mut present: Vec<Kind> = Vec::new();
+        for it in &all {
+            if let Some(i) = it.owner {
+                if !present.contains(&c.entities[i].kind) {
+                    present.push(c.entities[i].kind);
+                }
+            }
+        }
+        present.sort_by_key(|k| Kind::ALL.iter().position(|a| a == k));
+        ui.horizontal(|ui| {
+            for (on, icon, label) in [(false, ic::LIST_BULLETS, "Список"), (true, ic::CHART_LINE, "Шкала")] {
+                let sel = self.tl_scale == on;
+                let b = egui::Button::new(RichText::new(format!("{icon}  {label}")).size(12.5).color(if sel { theme::TEXT } else { theme::MUTED }))
+                    .fill(if sel { theme::SELECTED } else { Color32::TRANSPARENT })
+                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(8);
+                if ui.add(b).clicked() {
+                    self.tl_scale = on;
+                }
+            }
+            ui.add_space(10.0);
+            crate::timescale::kind_filter(ui, &present, &mut self.hidden);
+        });
+        ui.add_space(16.0);
+        let hidden = &self.hidden;
+        let items: Vec<&inv::TimelineItem> = all.iter().filter(|it| it.owner.is_none_or(|i| !hidden.contains(&c.entities[i].kind))).collect();
+        if self.tl_scale && !all.is_empty() {
+            if let Some(owner) = crate::timescale::show(ui, &mut self.scale, c, &items) {
+                self.go(owner.map_or(View::Overview, View::Entity));
+            }
+            return;
+        }
         if items.is_empty() {
             ui.add_space(30.0);
             ui.vertical_centered(|ui| {
@@ -1467,7 +1513,10 @@ impl Inv {
                 (Rect::from_center_size(p, size), g)
             })
             .collect();
-        let hovered = ui.input(|i| i.pointer.hover_pos()).and_then(|p| nodes.iter().position(|(r, _)| r.contains(p)));
+        let shown: Vec<bool> = c.entities.iter().map(|e| !self.hidden.contains(&e.kind)).collect();
+        let q = self.graph_find.trim().to_lowercase();
+        let found: Vec<bool> = c.entities.iter().map(|e| !q.is_empty() && e.name.to_lowercase().contains(&q)).collect();
+        let hovered = ui.input(|i| i.pointer.hover_pos()).and_then(|p| nodes.iter().enumerate().position(|(k, (r, _))| shown[k] && r.contains(p)));
         let focus = hovered.or(selected);
         let neighbours = |a: usize, b: usize| a == b || c.entities[a].links.iter().any(|l| c.entities.get(b).is_some_and(|e| e.name == l.target)) || c.entities[b].links.iter().any(|l| l.target == c.entities[a].name);
 
@@ -1475,7 +1524,7 @@ impl Inv {
         for (a, e) in c.entities.iter().enumerate() {
             for l in &e.links {
                 let Some(b) = c.find(&l.target) else { continue };
-                if a == b {
+                if a == b || !shown[a] || !shown[b] {
                     continue;
                 }
                 let (ra, rb) = (nodes[a].0, nodes[b].0);
@@ -1505,6 +1554,9 @@ impl Inv {
         let mut moved = false;
         let mut link_to = None;
         for (k, e) in c.entities.iter().enumerate() {
+            if !shown[k] {
+                continue;
+            }
             let (r, g) = &nodes[k];
             let resp = ui.interact(*r, ui.id().with(("node", &e.name)), Sense::click_and_drag());
             if resp.drag_started() && shift {
@@ -1530,7 +1582,10 @@ impl Inv {
                 open = Some(k);
             }
             let col = e.kind.color();
-            let dim = focus.is_some_and(|f| !neighbours(f, k));
+            let dim = focus.is_some_and(|f| !neighbours(f, k)) || (!q.is_empty() && !found[k]);
+            if found[k] {
+                painter.rect_stroke(r.expand(4.0), r.height() / 2.0 + 4.0, Stroke::new(1.5, theme::tint(theme::ACCENT, 0.8)), StrokeKind::Outside);
+            }
             let is_sel = selected == Some(k);
             let fill = if resp.hovered() || is_sel { theme::SELECTED } else { theme::SURFACE };
             let stroke = if is_sel { Stroke::new(1.5, col) } else { Stroke::new(1.0, theme::tint(col, if dim { 0.2 } else { 0.55 })) };
@@ -1585,6 +1640,39 @@ impl Inv {
             font(11.5),
             theme::FAINT,
         );
+
+        // Search and kind filter, top left.
+        let mut centre_on = None;
+        let mut kinds_here: Vec<Kind> = Kind::ALL.into_iter().filter(|k| c.entities.iter().any(|e| e.kind == *k)).collect();
+        kinds_here.dedup();
+        if n > 0 {
+            let panel = Rect::from_min_size(rect.left_top() + egui::vec2(14.0, 14.0), egui::vec2((rect.width() - 170.0).max(200.0), 80.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.graph_find)
+                            .hint_text(format!("{}  Найти на графе", ic::MAGNIFYING_GLASS))
+                            .desired_width(190.0)
+                            .font(font(12.5))
+                            .margin(egui::vec2(8.0, 5.0)),
+                    );
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        centre_on = found.iter().position(|f| *f);
+                    }
+                    if !q.is_empty() {
+                        let hits = found.iter().filter(|f| **f).count();
+                        ui.label(RichText::new(if hits == 0 { "нет совпадений".to_string() } else { format!("найдено: {hits}, Enter покажет") }).size(11.5).color(theme::FAINT));
+                    }
+                });
+                ui.add_space(6.0);
+                crate::timescale::kind_filter(ui, &kinds_here, &mut self.hidden);
+            });
+        }
+        if let Some(k) = centre_on {
+            let v = c.pos[&c.entities[k].name];
+            self.zoom = self.zoom.max(1.0);
+            self.pan = -Vec2::new(v[0], v[1]) * self.zoom;
+        }
 
         // Floating toolbar
         let bar = Rect::from_min_size(rect.right_top() + egui::vec2(-130.0, 14.0), egui::vec2(116.0, 34.0));

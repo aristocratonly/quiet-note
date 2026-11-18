@@ -7,13 +7,15 @@ mod inv_ui;
 mod investigation;
 mod map;
 mod theme;
+mod timescale;
 mod notes;
+mod palette;
 mod pdf;
 mod select;
 mod vault;
 mod writer;
 
-use eframe::egui::{self, FontId, RichText, Sense, Stroke};
+use eframe::egui::{self, RichText, Sense, Stroke};
 use egui_phosphor::regular as ic;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -63,6 +65,8 @@ struct Settings {
     smooth: bool,
     /// Draw the app's own pointer instead of the system one.
     own_cursor: bool,
+    /// Palette commands used lately, newest first.
+    recent_cmds: Vec<String>,
 }
 
 impl Default for Settings {
@@ -81,6 +85,7 @@ impl Default for Settings {
             last_case: None,
             smooth: true,
             own_cursor: true,
+            recent_cmds: Vec::new(),
         }
     }
 }
@@ -114,7 +119,7 @@ struct App {
     shown_key: Option<PathBuf>,
     /// Text as last saved, for version history.
     saved_text: String,
-    quick: Option<Quick>,
+    quick: Option<palette::State>,
     focus_mode: bool,
     reading: bool,
     backlinks: (Option<PathBuf>, Instant, Vec<(PathBuf, String)>),
@@ -135,29 +140,23 @@ enum Nav {
     Case(Option<PathBuf>, inv_ui::View),
 }
 
-/// The ⌘P switcher.
-struct Quick {
-    query: String,
-    sel: usize,
-    focus: bool,
-}
-
-/// Does every character of the query appear in order? Lower score is better.
-fn fuzzy(hay: &str, q: &str) -> Option<usize> {
-    let hay = hay.to_lowercase();
-    if q.is_empty() {
-        return Some(0);
-    }
-    if let Some(i) = hay.find(q) {
-        return Some(i);
-    }
-    let mut it = hay.chars().enumerate();
-    let mut last = 0;
-    for qc in q.chars() {
-        let (i, _) = it.find(|(_, c)| *c == qc)?;
-        last = i;
-    }
-    Some(100 + last)
+/// What a palette row does.
+#[derive(Clone)]
+enum Cmd {
+    Note(PathBuf),
+    Case(PathBuf),
+    Entity(usize),
+    NewNote,
+    NewFolder,
+    NewCase,
+    NewEntity(investigation::Kind),
+    Tab(inv_ui::View),
+    Mode(Mode),
+    Back,
+    Reading,
+    Focus,
+    Cursor,
+    Settings,
 }
 
 fn word_count(t: &str) -> usize {
@@ -1092,81 +1091,113 @@ impl App {
         self.last_edit = Instant::now();
     }
 
-    fn quick_window(&mut self, ctx: &egui::Context) {
-        let Some(q) = &mut self.quick else { return };
-        let all = notes::all_notes(&self.s.root);
-        let query = q.query.trim().to_lowercase();
-        let mut found: Vec<(usize, PathBuf, String)> = all
-            .into_iter()
-            .filter_map(|p| {
-                let rel = p.strip_prefix(&self.s.root).unwrap_or(&p).with_extension("").display().to_string();
-                fuzzy(&notes::title(&p), &query).or_else(|| fuzzy(&rel, &query).map(|s| s + 50)).map(|s| (s, p, rel))
-            })
-            .collect();
-        found.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
-        found.truncate(12);
-        let (up, down, enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
-        if down {
-            q.sel = (q.sel + 1).min(found.len().saturating_sub(1));
+    fn palette_items(&self) -> Vec<palette::Item<Cmd>> {
+        use investigation::Kind;
+        use inv_ui::View;
+        let mut v = Vec::new();
+        let mut add = |icon, color, label: String, hint: &str, key: String, cmd| {
+            v.push(palette::Item { icon, color, label, hint: hint.to_string(), key, cmd });
+        };
+        for p in notes::all_notes(&self.s.root) {
+            let rel = p.strip_prefix(&self.s.root).unwrap_or(&p).with_extension("").display().to_string();
+            add(ic::FILE_TEXT, theme::MUTED, rel.clone(), "заметка", format!("note:{rel}"), Cmd::Note(p));
         }
-        if up {
-            q.sel = q.sel.saturating_sub(1);
+        for d in investigation::list_cases(&self.inv.root) {
+            let name = d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            add(ic::DETECTIVE, theme::ACCENT, name.clone(), "дело", format!("case:{name}"), Cmd::Case(d));
         }
-        let mut pick = None;
-        let mut close = esc;
-        egui::Window::new("quick")
-            .title_bar(false)
-            .resizable(false)
-            .fixed_size([520.0, 0.0])
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 90.0))
-            .show(ctx, |ui| {
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut q.query)
-                        .hint_text(format!("{}  Найти заметку", ic::MAGNIFYING_GLASS))
-                        .desired_width(f32::INFINITY)
-                        .font(theme::font(15.0))
-                        .margin(egui::vec2(10.0, 8.0)),
-                );
-                if !q.focus {
-                    r.request_focus();
-                    q.focus = true;
-                }
-                if r.changed() {
-                    q.sel = 0;
-                }
-                ui.add_space(4.0);
-                if found.is_empty() {
-                    ui.label(RichText::new("Ничего не найдено. Enter создаст такую заметку").size(12.5).color(theme::FAINT));
-                }
-                for (k, (_, p, rel)) in found.iter().enumerate() {
-                    let on = k == q.sel;
-                    let txt = RichText::new(format!("{}  {}", ic::FILE_TEXT, rel)).size(13.5).color(if on { theme::TEXT } else { theme::MUTED });
-                    let b = egui::Button::new(txt).fill(if on { theme::SELECTED } else { egui::Color32::TRANSPARENT }).stroke(Stroke::NONE).min_size(egui::vec2(ui.available_width(), 30.0));
-                    if ui.add(b).clicked() {
-                        pick = Some(p.clone());
-                    }
-                }
-                ui.add_space(2.0);
-                ui.label(RichText::new("↑↓ выбрать   Enter открыть   Esc закрыть").size(11.0).color(theme::FAINT));
-            });
-        if enter {
-            pick = found.get(q.sel).map(|f| f.1.clone());
-            if pick.is_none() && !q.query.trim().is_empty() {
-                let name = q.query.trim().to_string();
+        if let Some(c) = &self.inv.case {
+            for (i, e) in c.entities.iter().enumerate() {
+                let hint = format!("{} в деле", e.kind.label().to_lowercase());
+                add(inv_ui::kind_icon(e.kind), e.kind.color(), e.name.clone(), &hint, format!("ent:{}", e.name), Cmd::Entity(i));
+            }
+            for (view, icon, name) in [(View::Overview, ic::SQUARES_FOUR, "Обзор"), (View::Graph, ic::GRAPH, "Граф"), (View::Timeline, ic::CLOCK_COUNTER_CLOCKWISE, "Хронология"), (View::Map, ic::MAP_TRIFOLD, "Карта")] {
+                add(icon, theme::FAINT, format!("Открыть: {name}"), "вкладка дела", format!("tab:{name}"), Cmd::Tab(view));
+            }
+            for k in Kind::ALL {
+                add(ic::PLUS, k.color(), format!("Новая карточка: {}", k.label()), "команда", format!("newent:{}", k.key()), Cmd::NewEntity(k));
+            }
+        }
+        add(ic::NOTE_PENCIL, theme::FAINT, "Новая заметка".into(), "⌘N", "cmd:newnote".into(), Cmd::NewNote);
+        add(ic::FOLDER_PLUS, theme::FAINT, "Новая папка".into(), "⇧⌘N", "cmd:newfolder".into(), Cmd::NewFolder);
+        add(ic::DETECTIVE, theme::FAINT, "Новое расследование".into(), "команда", "cmd:newcase".into(), Cmd::NewCase);
+        add(ic::NOTEBOOK, theme::FAINT, "Перейти в заметки".into(), "раздел", "cmd:notes".into(), Cmd::Mode(Mode::Notes));
+        add(ic::DETECTIVE, theme::FAINT, "Перейти в расследования".into(), "раздел", "cmd:invs".into(), Cmd::Mode(Mode::Investigations));
+        if !self.nav.is_empty() {
+            add(ic::ARROW_LEFT, theme::FAINT, "Назад".into(), "⌘[", "cmd:back".into(), Cmd::Back);
+        }
+        if self.open.is_some() {
+            add(ic::BOOK_OPEN, theme::FAINT, "Режим чтения".into(), "⌘E", "cmd:read".into(), Cmd::Reading);
+            add(ic::ARROWS_OUT, theme::FAINT, "Режим фокуса".into(), "⇧⌘F", "cmd:focus".into(), Cmd::Focus);
+        }
+        let cur = if self.s.own_cursor { "Курсор: системный" } else { "Курсор: прицел" };
+        add(ic::CROSSHAIR, theme::FAINT, cur.into(), "настройка", "cmd:cursor".into(), Cmd::Cursor);
+        add(ic::GEAR, theme::FAINT, "Настройки".into(), "команда", "cmd:settings".into(), Cmd::Settings);
+        v
+    }
+
+    fn run(&mut self, cmd: Cmd, actions: &mut Vec<Action>) {
+        let here = self.open.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(|| self.s.root.clone());
+        match cmd {
+            Cmd::Note(p) => {
+                self.s.mode = Mode::Notes;
+                self.open_note(p);
+            }
+            Cmd::Case(d) => {
+                self.s.mode = Mode::Investigations;
+                self.inv.open_case(&d);
+            }
+            Cmd::Entity(i) => {
+                self.s.mode = Mode::Investigations;
+                self.inv.go(inv_ui::View::Entity(i));
+            }
+            Cmd::NewNote => {
+                self.s.mode = Mode::Notes;
+                actions.push(Action::NewNote(here));
+            }
+            Cmd::NewFolder => {
+                self.s.mode = Mode::Notes;
+                actions.push(Action::NewFolder(here));
+            }
+            Cmd::NewCase => {
+                self.s.mode = Mode::Investigations;
+                self.inv.new_case();
+            }
+            Cmd::NewEntity(k) => self.inv.new_entity(k),
+            Cmd::Tab(v) => {
+                self.s.mode = Mode::Investigations;
+                self.inv.go(v);
+            }
+            Cmd::Mode(m) => self.s.mode = m,
+            Cmd::Back => self.back(),
+            Cmd::Reading => self.reading = !self.reading,
+            Cmd::Focus => self.focus_mode = !self.focus_mode,
+            Cmd::Cursor => self.s.own_cursor = !self.s.own_cursor,
+            Cmd::Settings => self.show_settings = true,
+        }
+    }
+
+    fn quick_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some(st) = &mut self.quick else { return };
+        let query = st.query.clone();
+        let items = palette::rank(self.palette_items(), &query, &self.s.recent_cmds, 40);
+        let st = self.quick.as_mut().unwrap();
+        match palette::show(ctx, st, &items) {
+            palette::Outcome::None => {}
+            palette::Outcome::Close => self.quick = None,
+            palette::Outcome::Run(k) => {
+                self.quick = None;
+                let it = &items[k];
+                palette::remember(&mut self.s.recent_cmds, &it.key);
+                self.flush();
+                self.run(it.cmd.clone(), actions);
+            }
+            palette::Outcome::Create(name) => {
                 self.quick = None;
                 self.s.mode = Mode::Notes;
                 let from = self.open.clone().unwrap_or_else(|| self.s.root.join("x.md"));
                 self.follow_link(&from, &name);
-                return;
             }
-        }
-        if let Some(p) = pick {
-            self.s.mode = Mode::Notes;
-            self.open_note(p);
-            close = true;
-        }
-        if close {
-            self.quick = None;
         }
     }
 
@@ -1282,7 +1313,7 @@ impl App {
         });
         let (quick, read, focus, esc) = ctx.input_mut(|i| {
             (
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::P),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::P) | i.consume_key(egui::Modifiers::COMMAND, egui::Key::K),
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::E),
                 i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F),
                 i.key_pressed(egui::Key::Escape),
@@ -1295,7 +1326,7 @@ impl App {
             self.back();
         }
         // Picked notes: Esc lets go, Delete sends them to the trash.
-        if self.s.mode == Mode::Notes && !self.pick.picked.is_empty() && ctx.memory(|m| m.focused().is_none()) {
+        if self.s.mode == Mode::Notes && self.quick.is_none() && !self.pick.picked.is_empty() && ctx.memory(|m| m.focused().is_none()) {
             let (esc, del) = ctx.input(|i| (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)));
             if esc {
                 self.pick.clear();
@@ -1308,7 +1339,7 @@ impl App {
             }
         }
         if quick {
-            self.quick = if self.quick.is_some() { None } else { Some(Quick { query: String::new(), sel: 0, focus: false }) };
+            self.quick = if self.quick.is_some() { None } else { Some(palette::State::default()) };
         }
         if self.s.mode == Mode::Notes && self.open.is_some() {
             if read {
@@ -1357,7 +1388,7 @@ impl App {
         if self.show_settings {
             self.settings_window(ctx);
         }
-        self.quick_window(ctx);
+        self.quick_window(ctx, &mut actions);
         self.history_window(ctx);
 
         for a in actions {

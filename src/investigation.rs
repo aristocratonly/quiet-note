@@ -26,7 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use crate::vault;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Kind {
     Person,
     Nick,
