@@ -5,10 +5,13 @@ use crate::theme;
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
 
 type TileId = (u8, u32, u32);
 const TILE: f32 = 256.0;
-const UA: &str = "QuietNote/0.4 (+https://github.com/aristocratonly/quiet-note)";
+const UA: &str = concat!("QuietNote/", env!("CARGO_PKG_VERSION"), " (+https://github.com/aristocratonly/quiet-note)");
+/// Tiles downloading at once; the tile server asks clients to keep this low.
+const PARALLEL: usize = 4;
 
 pub struct MapView {
     /// Centre in world pixels at zoom 0 (0..256).
@@ -16,9 +19,10 @@ pub struct MapView {
     zoom: f64,
     tiles: HashMap<TileId, TextureHandle>,
     pending: HashSet<TileId>,
-    failed: HashSet<TileId>,
-    tx: Sender<(TileId, Option<Vec<u8>>)>,
-    rx: Receiver<(TileId, Option<Vec<u8>>)>,
+    /// Tiles that failed: when to try again and how many tries so far.
+    failed: HashMap<TileId, (Instant, u32)>,
+    tx: Sender<(TileId, Result<Vec<u8>, String>)>,
+    rx: Receiver<(TileId, Result<Vec<u8>, String>)>,
     pub fitted: bool,
 }
 
@@ -39,7 +43,7 @@ fn project(lat: f64, lon: f64) -> (f64, f64) {
 impl Default for MapView {
     fn default() -> Self {
         let (tx, rx) = channel();
-        Self { center: (128.0, 128.0), zoom: 2.0, tiles: HashMap::new(), pending: HashSet::new(), failed: HashSet::new(), tx, rx, fitted: false }
+        Self { center: (128.0, 128.0), zoom: 2.0, tiles: HashMap::new(), pending: HashSet::new(), failed: HashMap::new(), tx, rx, fitted: false }
     }
 }
 
@@ -60,33 +64,37 @@ impl MapView {
     fn receive(&mut self, ctx: &egui::Context) {
         while let Ok((id, data)) = self.rx.try_recv() {
             self.pending.remove(&id);
-            let img = data.and_then(|d| image::load_from_memory(&d).ok());
+            let img = data.and_then(|d| image::load_from_memory(&d).map_err(|e| e.to_string()));
             match img {
-                Some(img) => {
+                Ok(img) => {
+                    self.failed.remove(&id);
                     let rgba = img.to_rgba8();
                     let ci = egui::ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], &rgba);
                     self.tiles.insert(id, ctx.load_texture(format!("tile-{id:?}"), ci, egui::TextureOptions::LINEAR));
                 }
-                None => {
-                    self.failed.insert(id);
+                Err(e) => {
+                    eprintln!("tile {id:?}: {e}");
+                    let tries = self.failed.get(&id).map_or(0, |f| f.1) + 1;
+                    let wait = Duration::from_secs((2u64 << tries.min(5)).min(60));
+                    self.failed.insert(id, (Instant::now() + wait, tries));
+                    ctx.request_repaint_after(wait);
                 }
             }
         }
     }
 
     fn request(&mut self, id: TileId, ctx: &egui::Context) {
-        if self.tiles.contains_key(&id) || self.pending.contains(&id) || self.failed.contains(&id) || self.pending.len() > 8 {
+        if self.tiles.contains_key(&id) || self.pending.contains(&id) || self.pending.len() >= PARALLEL {
+            return;
+        }
+        if self.failed.get(&id).is_some_and(|f| Instant::now() < f.0) {
             return;
         }
         self.pending.insert(id);
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let url = format!("https://tile.openstreetmap.org/{}/{}/{}.png", id.0, id.1, id.2);
-            let data = ureq::get(&url).set("User-Agent", UA).timeout(std::time::Duration::from_secs(15)).call().ok().and_then(|r| {
-                let mut v = vec![];
-                std::io::Read::read_to_end(&mut r.into_reader(), &mut v).ok().map(|_| v)
-            });
+            let data = fetch_tile(id);
             let _ = tx.send((id, data));
             ctx.request_repaint();
         });
@@ -142,7 +150,22 @@ impl MapView {
                         p.image(t.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::from_rgb(0x8a, 0x92, 0xa0));
                     }
                     None => {
-                        p.rect_stroke(r, 0.0, Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
+                        // Meanwhile, stretch a loaded tile from a lower zoom over this spot.
+                        let mut shown = false;
+                        for up in 1..=z.min(6) {
+                            let pid = (z - up, id.1 >> up, id.2 >> up);
+                            if let Some(t) = self.tiles.get(&pid) {
+                                let k = (1u32 << up) as f32;
+                                let (fx, fy) = ((id.1 - (pid.1 << up)) as f32 / k, (id.2 - (pid.2 << up)) as f32 / k);
+                                let uv = Rect::from_min_size(Pos2::new(fx, fy), Vec2::splat(1.0 / k));
+                                p.image(t.id(), r, uv, Color32::from_rgb(0x8a, 0x92, 0xa0));
+                                shown = true;
+                                break;
+                            }
+                        }
+                        if !shown {
+                            p.rect_stroke(r, 0.0, Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
+                        }
                         self.request(id, &ctx);
                     }
                 }
@@ -171,6 +194,42 @@ impl MapView {
         }
         p.text(rect.right_bottom() - Vec2::new(8.0, 6.0), Align2::RIGHT_BOTTOM, "© OpenStreetMap", theme::font(10.5), theme::FAINT);
         clicked
+    }
+}
+
+/// A tile from the disk cache, or from the server (then cached for a week).
+fn fetch_tile(id: TileId) -> Result<Vec<u8>, String> {
+    let file = dirs::cache_dir().map(|d| d.join("quiet-note/tiles").join(format!("{}/{}/{}.png", id.0, id.1, id.2)));
+    if let Some(f) = &file {
+        let fresh = std::fs::metadata(f).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e < Duration::from_secs(7 * 86400)));
+        if fresh {
+            if let Ok(v) = std::fs::read(f) {
+                return Ok(v);
+            }
+        }
+    }
+    let url = format!("https://tile.openstreetmap.org/{}/{}/{}.png", id.0, id.1, id.2);
+    let r = ureq::get(&url).set("User-Agent", UA).timeout(Duration::from_secs(15)).call().map_err(|e| e.to_string())?;
+    let mut v = vec![];
+    std::io::Read::read_to_end(&mut r.into_reader(), &mut v).map_err(|e| e.to_string())?;
+    if let Some(f) = &file {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(f, &v);
+    }
+    Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Loads a screenful of tiles the way the map does. Needs the network.
+    #[test]
+    #[ignore]
+    fn tiles_load() {
+        let ids: Vec<_> = (0..4u32).flat_map(|x| (0..3u32).map(move |y| (12u8, 2474 + x, 1279 + y))).collect();
+        let bad: Vec<_> = ids.iter().filter_map(|id| super::fetch_tile(*id).err().map(|e| format!("{id:?}: {e}"))).collect();
+        assert!(bad.is_empty(), "{bad:?}");
     }
 }
 

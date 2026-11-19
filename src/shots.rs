@@ -247,3 +247,19 @@ fn dates_to_days() {
     assert_eq!(day_num("2023"), day_num("2023-01-01"));
     assert_eq!(day_num("вчера"), None);
 }
+
+/// The map with real tiles: waits for them to download. Needs the network.
+#[test]
+#[ignore]
+fn map_tiles() {
+    let base = std::env::temp_dir().join("quiet-note-map");
+    let s = sample(&base);
+    let mut h = harness(Settings { mode: Mode::Investigations, ..s });
+    h.state_mut().app.as_mut().unwrap().inv.view = inv_ui::View::Map;
+    for _ in 0..80 {
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    fs::create_dir_all("target/shots").unwrap();
+    h.render().unwrap().save("target/shots/21-map-tiles.png").unwrap();
+}
